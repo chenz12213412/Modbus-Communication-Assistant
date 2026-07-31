@@ -1,6 +1,7 @@
 #include "mainwindow.h"
 
 #include <QAbstractItemView>
+#include <QApplication>
 #include <QCheckBox>
 #include <QCloseEvent>
 #include <QColor>
@@ -19,6 +20,7 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPlainTextEdit>
+#include <QProcess>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSerialPort>
@@ -70,6 +72,11 @@ MainWindow::MainWindow(QWidget *parent)
       m_holdingRegisters(65536, 0),
       m_inputRegisters(65536, 0)
 {
+    QSettings appearanceSettings;
+    m_darkTheme = appearanceSettings
+                      .value(QStringLiteral("appearance/darkTheme"), false)
+                      .toBool();
+
     buildUi();
     applyStyle();
 
@@ -79,6 +86,9 @@ MainWindow::MainWindow(QWidget *parent)
 
     connect(m_refreshButton, &QPushButton::clicked, this, &MainWindow::refreshPorts);
     connect(m_openButton, &QPushButton::clicked, this, &MainWindow::toggleSerialPort);
+    connect(m_themeButton, &QPushButton::clicked, this, &MainWindow::toggleTheme);
+    connect(m_newWindowButton, &QPushButton::clicked,
+            this, &MainWindow::launchNewInstance);
     connect(m_sendButton, &QPushButton::clicked, this, &MainWindow::sendRequest);
     connect(m_rawSendButton, &QPushButton::clicked, this, &MainWindow::sendRawFrame);
     connect(m_rawEdit, &QLineEdit::returnPressed, this, &MainWindow::sendRawFrame);
@@ -173,6 +183,18 @@ void MainWindow::buildUi()
     titles->addWidget(subtitle);
     headingRow->addLayout(titles);
     headingRow->addStretch();
+    m_themeButton = new QPushButton;
+    m_themeButton->setObjectName(QStringLiteral("headerButton"));
+    m_themeButton->setMinimumWidth(96);
+    m_themeButton->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+T")));
+    m_newWindowButton = new QPushButton(QStringLiteral("软件多开"));
+    m_newWindowButton->setObjectName(QStringLiteral("headerButton"));
+    m_newWindowButton->setMinimumWidth(88);
+    m_newWindowButton->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+N")));
+    m_newWindowButton->setToolTip(
+        QStringLiteral("启动一个独立的软件实例（Ctrl+Shift+N）"));
+    headingRow->addWidget(m_themeButton);
+    headingRow->addWidget(m_newWindowButton);
     m_connectionBadge = new QLabel(QStringLiteral("RTU · 主站 · 未连接"));
     m_connectionBadge->setObjectName(QStringLiteral("connectionBadge"));
     headingRow->addWidget(m_connectionBadge);
@@ -542,9 +564,48 @@ void MainWindow::buildUi()
 
 void MainWindow::applyStyle()
 {
-    QFile themeFile(QStringLiteral(":/themes/industrial.qss"));
-    if (themeFile.open(QIODevice::ReadOnly | QIODevice::Text))
-        setStyleSheet(QString::fromUtf8(themeFile.readAll()));
+    QFile baseThemeFile(QStringLiteral(":/themes/industrial.qss"));
+    QString styleSheet;
+    if (baseThemeFile.open(QIODevice::ReadOnly | QIODevice::Text))
+        styleSheet = QString::fromUtf8(baseThemeFile.readAll());
+
+    if (m_darkTheme) {
+        QFile darkThemeFile(QStringLiteral(":/themes/industrial-dark.qss"));
+        if (darkThemeFile.open(QIODevice::ReadOnly | QIODevice::Text))
+            styleSheet += QStringLiteral("\n") + QString::fromUtf8(darkThemeFile.readAll());
+    }
+    setStyleSheet(styleSheet);
+
+    if (m_themeButton) {
+        m_themeButton->setText(m_darkTheme
+                                   ? QStringLiteral("亮色主题")
+                                   : QStringLiteral("暗色主题"));
+        m_themeButton->setToolTip(
+            m_darkTheme
+                ? QStringLiteral("切换到亮色主题（Ctrl+Shift+T）")
+                : QStringLiteral("切换到暗色主题（Ctrl+Shift+T）"));
+    }
+}
+
+void MainWindow::toggleTheme()
+{
+    m_darkTheme = !m_darkTheme;
+    QSettings settings;
+    settings.setValue(QStringLiteral("appearance/darkTheme"), m_darkTheme);
+    applyStyle();
+    setStatus(m_darkTheme ? QStringLiteral("已切换到暗色主题")
+                          : QStringLiteral("已切换到亮色主题"));
+}
+
+void MainWindow::launchNewInstance()
+{
+    const QString executable = QCoreApplication::applicationFilePath();
+    const QString workingDirectory = QCoreApplication::applicationDirPath();
+    if (QProcess::startDetached(executable, {}, workingDirectory)) {
+        setStatus(QStringLiteral("已启动新的软件实例"));
+    } else {
+        setStatus(QStringLiteral("软件多开失败，无法启动新实例"), true);
+    }
 }
 
 void MainWindow::refreshPorts()
@@ -1848,6 +1909,7 @@ void MainWindow::saveSettings()
 {
     QSettings settings;
     settings.setValue(QStringLiteral("window/geometry"), saveGeometry());
+    settings.setValue(QStringLiteral("appearance/darkTheme"), m_darkTheme);
     settings.setValue(QStringLiteral("transport/protocol"), m_protocolCombo->currentData());
     settings.setValue(QStringLiteral("serial/baud"), m_baudCombo->currentData());
     settings.setValue(QStringLiteral("serial/mode"), m_modeCombo->currentData());

@@ -218,6 +218,21 @@ QPushButton {
     font-weight: 700;
 }
 
+QPushButton#headerButton {
+    min-height: 27px;
+    padding: 4px 12px;
+    color: #34424D;
+    background: #F1F4F6;
+    border-color: #9DA9B2;
+    font-size: 12px;
+}
+
+QPushButton#headerButton:hover {
+    color: #17212B;
+    background: #FFFFFF;
+    border-color: #C66A0A;
+}
+
 QPushButton:hover {
     background: #D3DADF;
     border-color: #596974;

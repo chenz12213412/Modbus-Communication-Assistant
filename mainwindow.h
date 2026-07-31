@@ -52,6 +52,8 @@ private slots:
     void updateSlaveDataFromTable(int row, int column);
     void clearLog();
     void saveLog();
+    void toggleTheme();
+    void launchNewInstance();
 
 private:
     void buildUi();
@@ -103,6 +105,7 @@ private:
     quint16 m_transactionId = 0;
     quint16 m_pendingTransactionId = 0;
     quint16 m_currentTransactionId = 0;
+    bool m_darkTheme = false;
     QVector<quint8> m_coils;
     QVector<quint8> m_discreteInputs;
     QVector<quint16> m_holdingRegisters;
@@ -118,6 +121,8 @@ private:
     QComboBox *m_flowControlCombo = nullptr;
     QPushButton *m_refreshButton = nullptr;
     QPushButton *m_openButton = nullptr;
+    QPushButton *m_themeButton = nullptr;
+    QPushButton *m_newWindowButton = nullptr;
     QLabel *m_connectionBadge = nullptr;
     QLineEdit *m_hostEdit = nullptr;
     QSpinBox *m_tcpPortSpin = nullptr;

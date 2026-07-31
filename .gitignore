@@ -1,0 +1,13 @@
+build/
+build-*/
+dist/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+*.user
+*.pro.user
+*.obj
+*.o
+*.exe
+debug/
+release/

@@ -1,0 +1,11 @@
+<RCC>
+    <qresource prefix="/app">
+        <file alias="icon.png">assets/modbus2.png</file>
+    </qresource>
+    <qresource prefix="/themes">
+        <file alias="industrial.qss">styles/industrial.qss</file>
+        <file alias="icons/arrow-up.svg">styles/icons/arrow-up.svg</file>
+        <file alias="icons/arrow-down.svg">styles/icons/arrow-down.svg</file>
+        <file alias="icons/check.svg">styles/icons/check.svg</file>
+    </qresource>
+</RCC>

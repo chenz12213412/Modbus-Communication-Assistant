@@ -7,6 +7,7 @@
 #include <QColor>
 #include <QComboBox>
 #include <QDateTime>
+#include <QEvent>
 #include <QFile>
 #include <QFileDialog>
 #include <QFormLayout>
@@ -21,8 +22,10 @@
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QProcess>
+#include <QAbstractSpinBox>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QScrollArea>
 #include <QSerialPort>
 #include <QSerialPortInfo>
 #include <QSettings>
@@ -136,6 +139,8 @@ MainWindow::MainWindow(QWidget *parent)
             this, &MainWindow::refreshSlaveDataTable);
     connect(m_resultTable, &QTableWidget::cellChanged,
             this, &MainWindow::updateSlaveDataFromTable);
+    connect(m_resultViewCombo, qOverload<int>(&QComboBox::currentIndexChanged),
+            this, &MainWindow::updateResultViewMode);
 
     loadSettings();
     refreshPorts();
@@ -158,6 +163,17 @@ void MainWindow::closeEvent(QCloseEvent *event)
 {
     saveSettings();
     QMainWindow::closeEvent(event);
+}
+
+bool MainWindow::eventFilter(QObject *watched, QEvent *event)
+{
+    if (m_resultPanelScroll && watched == m_resultPanelScroll->viewport()
+        && event->type() == QEvent::Resize) {
+        const int columns = resultPanelColumnCount();
+        if (columns != m_resultPanelColumns)
+            QTimer::singleShot(0, this, &MainWindow::refreshResultPanel);
+    }
+    return QMainWindow::eventFilter(watched, event);
 }
 
 void MainWindow::buildUi()
@@ -449,12 +465,27 @@ void MainWindow::buildUi()
     auto *resultPage = new QWidget;
     auto *resultLayout = new QVBoxLayout(resultPage);
     resultLayout->setContentsMargins(10, 12, 10, 10);
+    auto *resultTools = new QHBoxLayout;
     auto *resultHint = new QLabel(QStringLiteral("解析结果"));
     resultHint->setObjectName(QStringLiteral("sectionTitle"));
-    resultLayout->addWidget(resultHint);
+    resultTools->addWidget(resultHint);
+    resultTools->addStretch();
+    auto *resultModeLabel = new QLabel(QStringLiteral("显示方式"));
+    resultModeLabel->setObjectName(QStringLiteral("caption"));
+    m_resultViewCombo = new QComboBox;
+    m_resultViewCombo->addItem(QStringLiteral("表格模式"), 0);
+    m_resultViewCombo->addItem(QStringLiteral("面板模式"), 1);
+    m_resultViewCombo->setMinimumWidth(112);
+    m_resultViewCombo->view()->setMinimumWidth(132);
+    m_resultViewCombo->setAccessibleName(QStringLiteral("数据解析显示方式"));
+    resultTools->addWidget(resultModeLabel);
+    resultTools->addWidget(m_resultViewCombo);
+    resultLayout->addLayout(resultTools);
+
+    m_resultViewStack = new QStackedWidget;
     m_resultTable = new QTableWidget(0, 4);
     m_resultTable->setHorizontalHeaderLabels(
-        {QStringLiteral("地址"), QStringLiteral("十进制"), QStringLiteral("十六进制"),
+        {QStringLiteral("PLC 地址"), QStringLiteral("十进制"), QStringLiteral("十六进制"),
          QStringLiteral("二进制 / 状态")});
     m_resultTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
     m_resultTable->verticalHeader()->setVisible(false);
@@ -462,7 +493,23 @@ void MainWindow::buildUi()
     m_resultTable->setAlternatingRowColors(true);
     m_resultTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_resultTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-    resultLayout->addWidget(m_resultTable);
+    m_resultViewStack->addWidget(m_resultTable);
+
+    m_resultPanelScroll = new QScrollArea;
+    m_resultPanelScroll->setObjectName(QStringLiteral("resultPanelScroll"));
+    m_resultPanelScroll->setWidgetResizable(true);
+    m_resultPanelScroll->setFrameShape(QFrame::NoFrame);
+    m_resultPanelContent = new QWidget;
+    m_resultPanelContent->setObjectName(QStringLiteral("resultPanelContent"));
+    m_resultPanelLayout = new QGridLayout(m_resultPanelContent);
+    m_resultPanelLayout->setContentsMargins(14, 14, 14, 14);
+    m_resultPanelLayout->setHorizontalSpacing(12);
+    m_resultPanelLayout->setVerticalSpacing(14);
+    m_resultPanelLayout->setAlignment(Qt::AlignTop | Qt::AlignLeft);
+    m_resultPanelScroll->setWidget(m_resultPanelContent);
+    m_resultPanelScroll->viewport()->installEventFilter(this);
+    m_resultViewStack->addWidget(m_resultPanelScroll);
+    resultLayout->addWidget(m_resultViewStack);
     tabs->addTab(resultPage, QStringLiteral("数据解析"));
 
     auto *logPage = new QWidget;
@@ -584,6 +631,193 @@ void MainWindow::applyStyle()
             m_darkTheme
                 ? QStringLiteral("切换到亮色主题（Ctrl+Shift+T）")
                 : QStringLiteral("切换到暗色主题（Ctrl+Shift+T）"));
+    }
+}
+
+void MainWindow::updateResultViewMode()
+{
+    if (!m_resultViewCombo || !m_resultViewStack)
+        return;
+
+    const bool panelMode = m_resultViewCombo->currentData().toInt() == 1;
+    m_resultViewStack->setCurrentIndex(panelMode ? 1 : 0);
+    if (panelMode)
+        refreshResultPanel();
+
+    QSettings settings;
+    settings.setValue(QStringLiteral("appearance/resultViewMode"),
+                      m_resultViewCombo->currentData());
+}
+
+void MainWindow::clearResultPanel()
+{
+    if (!m_resultPanelLayout)
+        return;
+
+    while (QLayoutItem *item = m_resultPanelLayout->takeAt(0)) {
+        if (QWidget *widget = item->widget())
+            widget->deleteLater();
+        delete item;
+    }
+}
+
+int MainWindow::resultPanelColumnCount() const
+{
+    if (!m_resultPanelScroll)
+        return 5;
+    const int availableWidth = qMax(240, m_resultPanelScroll->viewport()->width() - 28);
+    return qBound(2, availableWidth / 118, 10);
+}
+
+QString MainWindow::formatPlcAddress(int protocolAddress) const
+{
+    const int offset = qBound(0, protocolAddress, 65535);
+    switch (m_resultAddressArea) {
+    case 0:
+        return QStringLiteral("%1").arg(offset + 1, 5, 10, QLatin1Char('0'));
+    case 1:
+        return QString::number(10001 + offset);
+    case 2:
+        return QString::number(40001 + offset);
+    case 3:
+        return QString::number(30001 + offset);
+    default:
+        return QString::number(offset);
+    }
+}
+
+void MainWindow::setSlaveDataValue(int area, int address, quint16 value)
+{
+    if (!isSlaveMode() || area < 0 || area > 3 || address < 0 || address >= 65536)
+        return;
+
+    if (area == 0)
+        m_coils[address] = value ? 1 : 0;
+    else if (area == 1)
+        m_discreteInputs[address] = value ? 1 : 0;
+    else if (area == 2)
+        m_holdingRegisters[address] = value;
+    else
+        m_inputRegisters[address] = value;
+
+    refreshSlaveDataTable();
+    setStatus(QStringLiteral("从站数据已更新：PLC 地址 %1 = %2")
+                  .arg(formatPlcAddress(address)).arg(value));
+}
+
+void MainWindow::refreshResultPanel()
+{
+    if (!m_resultPanelLayout || !m_resultTable)
+        return;
+
+    clearResultPanel();
+    const int columns = resultPanelColumnCount();
+    m_resultPanelColumns = columns;
+
+    if (m_resultTable->rowCount() == 0) {
+        auto *emptyLabel = new QLabel(QStringLiteral("暂无解析数据"), m_resultPanelContent);
+        emptyLabel->setObjectName(QStringLiteral("resultEmptyState"));
+        emptyLabel->setAlignment(Qt::AlignCenter);
+        emptyLabel->setMinimumHeight(160);
+        m_resultPanelLayout->addWidget(emptyLabel, 0, 0, 1, columns);
+        return;
+    }
+
+    for (int index = 0; index < m_resultTable->rowCount(); ++index) {
+        const QTableWidgetItem *addressItem = m_resultTable->item(index, 0);
+        const QTableWidgetItem *valueItem = m_resultTable->item(index, 1);
+        if (!addressItem || !valueItem)
+            continue;
+
+        const QString address = addressItem->text();
+        const int protocolAddress = addressItem->data(Qt::UserRole).isValid()
+                                        ? addressItem->data(Qt::UserRole).toInt()
+                                        : index;
+        const QString valueText = valueItem->text();
+        bool valueOk = false;
+        const uint value = valueText.toUInt(&valueOk,
+            valueText.startsWith(QStringLiteral("0x"), Qt::CaseInsensitive) ? 16 : 10);
+
+        auto *card = new QFrame(m_resultPanelContent);
+        card->setObjectName(QStringLiteral("resultCard"));
+        card->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        card->setMinimumWidth(104);
+        card->setMaximumWidth(156);
+        auto *cardLayout = new QVBoxLayout(card);
+        cardLayout->setContentsMargins(9, 10, 9, 9);
+        cardLayout->setSpacing(7);
+
+        if (m_resultIsBitData) {
+            const bool active = valueOk && value != 0;
+            auto *indicator = new QPushButton(active ? QStringLiteral("ON")
+                                                     : QStringLiteral("OFF"), card);
+            indicator->setObjectName(QStringLiteral("indicatorLamp"));
+            indicator->setProperty("active", active);
+            indicator->setFixedSize(44, 44);
+            indicator->setToolTip(isSlaveMode()
+                ? QStringLiteral("点击切换状态；协议偏移地址 %1").arg(protocolAddress)
+                : (active ? QStringLiteral("线圈已接通") : QStringLiteral("线圈已断开")));
+            indicator->setAccessibleName(
+                QStringLiteral("PLC 地址 %1，当前 %2").arg(address,
+                    active ? QStringLiteral("接通") : QStringLiteral("断开")));
+            indicator->setEnabled(isSlaveMode());
+            if (isSlaveMode()) {
+                const int area = m_resultAddressArea;
+                connect(indicator, &QPushButton::clicked, this,
+                        [this, area, protocolAddress, active] {
+                    setSlaveDataValue(area, protocolAddress, active ? 0 : 1);
+                });
+            }
+            cardLayout->addWidget(indicator, 0, Qt::AlignHCenter);
+        } else {
+            auto *valueBox = new QFrame(card);
+            valueBox->setObjectName(QStringLiteral("registerValueBox"));
+            auto *valueLayout = new QVBoxLayout(valueBox);
+            valueLayout->setContentsMargins(6, 7, 6, 6);
+            valueLayout->setSpacing(1);
+            QWidget *decimalWidget = nullptr;
+            if (isSlaveMode() && valueOk) {
+                auto *editor = new QSpinBox(valueBox);
+                editor->setObjectName(QStringLiteral("registerEditor"));
+                editor->setRange(0, 65535);
+                editor->setValue(static_cast<int>(value));
+                editor->setAlignment(Qt::AlignCenter);
+                editor->setKeyboardTracking(false);
+                editor->setButtonSymbols(QAbstractSpinBox::NoButtons);
+                editor->setToolTip(
+                    QStringLiteral("输入数值后按 Enter；协议偏移地址 %1")
+                        .arg(protocolAddress));
+                decimalWidget = editor;
+                const int area = m_resultAddressArea;
+                connect(editor, &QSpinBox::editingFinished, this,
+                        [this, area, protocolAddress, editor] {
+                    setSlaveDataValue(area, protocolAddress,
+                                      static_cast<quint16>(editor->value()));
+                });
+            } else {
+                auto *decimalLabel = new QLabel(valueText, valueBox);
+                decimalLabel->setObjectName(QStringLiteral("registerNumber"));
+                decimalLabel->setAlignment(Qt::AlignCenter);
+                decimalWidget = decimalLabel;
+            }
+            auto *hexLabel = new QLabel(valueOk
+                ? QStringLiteral("0x%1").arg(value, 4, 16, QLatin1Char('0')).toUpper()
+                : QStringLiteral("—"), valueBox);
+            hexLabel->setObjectName(QStringLiteral("registerHex"));
+            hexLabel->setAlignment(Qt::AlignCenter);
+            valueLayout->addWidget(decimalWidget);
+            valueLayout->addWidget(hexLabel);
+            cardLayout->addWidget(valueBox);
+        }
+
+        auto *addressLabel = new QLabel(QStringLiteral("地址 %1").arg(address), card);
+        addressLabel->setObjectName(QStringLiteral("resultAddress"));
+        addressLabel->setAlignment(Qt::AlignCenter);
+        addressLabel->setToolTip(
+            QStringLiteral("协议偏移地址：%1").arg(protocolAddress));
+        cardLayout->addWidget(addressLabel);
+
+        m_resultPanelLayout->addWidget(card, index / columns, index % columns);
     }
 }
 
@@ -901,8 +1135,11 @@ void MainWindow::updateModeUi()
         m_resultTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
         m_resultTable->setRowCount(0);
         m_resultTable->setHorizontalHeaderLabels(
-            {QStringLiteral("地址"), QStringLiteral("十进制"), QStringLiteral("十六进制"),
+            {QStringLiteral("PLC 地址"), QStringLiteral("十进制"), QStringLiteral("十六进制"),
              QStringLiteral("二进制 / 状态")});
+        m_resultIsBitData = false;
+        m_resultAddressArea = -1;
+        refreshResultPanel();
         setStatus(QStringLiteral("已切换到主站模式"));
     }
     setConnectedState(isTransportOpen());
@@ -917,13 +1154,15 @@ void MainWindow::refreshSlaveDataTable()
     const int start = m_slaveViewStartSpin->value();
     const int count = qMin(m_slaveViewCountSpin->value(), 65536 - start);
     const bool bitArea = area == 0 || area == 1;
+    m_resultIsBitData = bitArea;
+    m_resultAddressArea = area;
     const QString typeName = m_slaveAreaCombo->currentText();
 
     m_resultTable->blockSignals(true);
     m_resultTable->clearContents();
     m_resultTable->setRowCount(count);
     m_resultTable->setHorizontalHeaderLabels(
-        {QStringLiteral("地址"), QStringLiteral("当前值（可编辑）"),
+        {QStringLiteral("PLC 地址"), QStringLiteral("当前值（可编辑）"),
          QStringLiteral("十六进制"), QStringLiteral("数据区 / 状态")});
 
     for (int row = 0; row < count; ++row) {
@@ -938,7 +1177,7 @@ void MainWindow::refreshSlaveDataTable()
         else
             value = m_inputRegisters.at(address);
 
-        auto *addressItem = new QTableWidgetItem(QString::number(address));
+        auto *addressItem = new QTableWidgetItem(formatPlcAddress(address));
         addressItem->setFlags(addressItem->flags() & ~Qt::ItemIsEditable);
         addressItem->setData(Qt::UserRole, address);
         auto *valueItem = new QTableWidgetItem(QString::number(value));
@@ -957,6 +1196,7 @@ void MainWindow::refreshSlaveDataTable()
         m_resultTable->setItem(row, 3, stateItem);
     }
     m_resultTable->blockSignals(false);
+    refreshResultPanel();
 }
 
 void MainWindow::updateSlaveDataFromTable(int row, int column)
@@ -982,17 +1222,7 @@ void MainWindow::updateSlaveDataFromTable(int row, int column)
         return;
     }
 
-    if (area == 0)
-        m_coils[address] = static_cast<quint8>(value);
-    else if (area == 1)
-        m_discreteInputs[address] = static_cast<quint8>(value);
-    else if (area == 2)
-        m_holdingRegisters[address] = static_cast<quint16>(value);
-    else
-        m_inputRegisters[address] = static_cast<quint16>(value);
-
-    refreshSlaveDataTable();
-    setStatus(QStringLiteral("从站数据已更新：地址 %1 = %2").arg(address).arg(value));
+    setSlaveDataValue(area, address, static_cast<quint16>(value));
 }
 
 QByteArray MainWindow::buildRequest(QString *errorMessage) const
@@ -1335,6 +1565,18 @@ void MainWindow::parseResponse(const QByteArray &frame)
     }
 
     m_resultTable->setRowCount(0);
+    m_resultIsBitData = function == 0x01 || function == 0x02 || function == 0x05;
+    if (function == 0x01 || function == 0x05 || function == 0x0F)
+        m_resultAddressArea = 0;
+    else if (function == 0x02)
+        m_resultAddressArea = 1;
+    else if (function == 0x03 || function == 0x06 || function == 0x10)
+        m_resultAddressArea = 2;
+    else if (function == 0x04)
+        m_resultAddressArea = 3;
+    else
+        m_resultAddressArea = -1;
+    refreshResultPanel();
     const quint16 baseAddress = readU16(m_lastRequest, 2);
 
     if (function == 0x01 || function == 0x02) {
@@ -1351,7 +1593,9 @@ void MainWindow::parseResponse(const QByteArray &frame)
             const bool on = (static_cast<quint8>(frame.at(byteIndex)) >> (index % 8)) & 0x01;
             const int row = m_resultTable->rowCount();
             m_resultTable->insertRow(row);
-            m_resultTable->setItem(row, 0, new QTableWidgetItem(QString::number(baseAddress + index)));
+            auto *addressItem = new QTableWidgetItem(formatPlcAddress(baseAddress + index));
+            addressItem->setData(Qt::UserRole, baseAddress + index);
+            m_resultTable->setItem(row, 0, addressItem);
             m_resultTable->setItem(row, 1, new QTableWidgetItem(on ? QStringLiteral("1") : QStringLiteral("0")));
             m_resultTable->setItem(row, 2, new QTableWidgetItem(on ? QStringLiteral("0x01") : QStringLiteral("0x00")));
             m_resultTable->setItem(row, 3, new QTableWidgetItem(on ? QStringLiteral("ON / 接通") : QStringLiteral("OFF / 断开")));
@@ -1368,7 +1612,9 @@ void MainWindow::parseResponse(const QByteArray &frame)
             const quint16 value = readU16(frame, 3 + index * 2);
             const int row = m_resultTable->rowCount();
             m_resultTable->insertRow(row);
-            m_resultTable->setItem(row, 0, new QTableWidgetItem(QString::number(baseAddress + index)));
+            auto *addressItem = new QTableWidgetItem(formatPlcAddress(baseAddress + index));
+            addressItem->setData(Qt::UserRole, baseAddress + index);
+            m_resultTable->setItem(row, 0, addressItem);
             m_resultTable->setItem(row, 1, new QTableWidgetItem(QString::number(value)));
             m_resultTable->setItem(row, 2, new QTableWidgetItem(
                 QStringLiteral("0x%1").arg(value, 4, 16, QLatin1Char('0')).toUpper()));
@@ -1383,7 +1629,9 @@ void MainWindow::parseResponse(const QByteArray &frame)
         }
         const quint16 value = readU16(frame, 4);
         m_resultTable->insertRow(0);
-        m_resultTable->setItem(0, 0, new QTableWidgetItem(QString::number(baseAddress)));
+        auto *addressItem = new QTableWidgetItem(formatPlcAddress(baseAddress));
+        addressItem->setData(Qt::UserRole, baseAddress);
+        m_resultTable->setItem(0, 0, addressItem);
         m_resultTable->setItem(0, 1, new QTableWidgetItem(QString::number(value)));
         m_resultTable->setItem(0, 2, new QTableWidgetItem(
             QStringLiteral("0x%1").arg(value, 4, 16, QLatin1Char('0')).toUpper()));
@@ -1401,12 +1649,15 @@ void MainWindow::parseResponse(const QByteArray &frame)
             return;
         }
         m_resultTable->insertRow(0);
-        m_resultTable->setItem(0, 0, new QTableWidgetItem(QString::number(responseAddress)));
+        auto *addressItem = new QTableWidgetItem(formatPlcAddress(responseAddress));
+        addressItem->setData(Qt::UserRole, responseAddress);
+        m_resultTable->setItem(0, 0, addressItem);
         m_resultTable->setItem(0, 1, new QTableWidgetItem(QString::number(responseQuantity)));
         m_resultTable->setItem(0, 2, new QTableWidgetItem(QStringLiteral("—")));
         m_resultTable->setItem(0, 3, new QTableWidgetItem(QStringLiteral("批量写入成功")));
         setStatus(QStringLiteral("批量写入成功：%1 项").arg(responseQuantity));
     }
+    refreshResultPanel();
 }
 
 void MainWindow::handleSlaveRequest(const QByteArray &frame)
@@ -1880,6 +2131,8 @@ void MainWindow::loadSettings()
             combo->setCurrentIndex(index);
     };
     setComboByData(m_protocolCombo, settings.value(QStringLiteral("transport/protocol"), 0));
+    setComboByData(m_resultViewCombo,
+                   settings.value(QStringLiteral("appearance/resultViewMode"), 0));
     setComboByData(m_baudCombo, settings.value(QStringLiteral("serial/baud"), 9600));
     setComboByData(m_modeCombo, settings.value(QStringLiteral("serial/mode"), 0));
     setComboByData(m_dataBitsCombo, settings.value(QStringLiteral("serial/dataBits"),
@@ -1910,6 +2163,8 @@ void MainWindow::saveSettings()
     QSettings settings;
     settings.setValue(QStringLiteral("window/geometry"), saveGeometry());
     settings.setValue(QStringLiteral("appearance/darkTheme"), m_darkTheme);
+    settings.setValue(QStringLiteral("appearance/resultViewMode"),
+                      m_resultViewCombo->currentData());
     settings.setValue(QStringLiteral("transport/protocol"), m_protocolCombo->currentData());
     settings.setValue(QStringLiteral("serial/baud"), m_baudCombo->currentData());
     settings.setValue(QStringLiteral("serial/mode"), m_modeCombo->currentData());

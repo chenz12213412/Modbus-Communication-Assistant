@@ -249,6 +249,68 @@ QTableWidget::item:selected {
     background: #E3AA5B;
 }
 
+QScrollArea#resultPanelScroll,
+QWidget#resultPanelContent {
+    background: #151C21;
+}
+
+QScrollArea#resultPanelScroll {
+    border-color: #53636E;
+}
+
+QFrame#resultCard {
+    background: #20292F;
+    border-color: #4D5C66;
+}
+
+QFrame#resultCard:hover {
+    background: #273239;
+    border-color: #E19131;
+}
+
+QPushButton#indicatorLamp {
+    color: #E8EEF1;
+    background: #46525A;
+    border-color: #697983;
+}
+
+QPushButton#indicatorLamp[active="true"] {
+    color: #FFFFFF;
+    background: #28A76B;
+    border-color: #70D5A5;
+}
+
+QFrame#registerValueBox {
+    background: #11171B;
+    border-color: #5A6A74;
+}
+
+QLabel#registerNumber {
+    color: #F2F6F8;
+}
+
+QSpinBox#registerEditor {
+    color: #F2F6F8;
+    background: transparent;
+}
+
+QSpinBox#registerEditor:focus {
+    background: #0D1215;
+    border-color: #E19131;
+}
+
+QLabel#registerHex {
+    color: #99A8B1;
+}
+
+QLabel#resultAddress {
+    color: #C0CBD1;
+}
+
+QLabel#resultEmptyState {
+    color: #82919A;
+}
+
 QPlainTextEdit {
     color: #E7EDF0;
     background: #11171B;

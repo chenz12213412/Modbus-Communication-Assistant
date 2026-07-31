@@ -347,6 +347,99 @@ QTableWidget::item:selected {
     background: #F5D9AD;
 }
 
+QScrollArea#resultPanelScroll,
+QWidget#resultPanelContent {
+    background: #EEF1F3;
+}
+
+QScrollArea#resultPanelScroll {
+    border: 1px solid #8997A2;
+    border-radius: 3px;
+}
+
+QFrame#resultCard {
+    background: #F9FAFB;
+    border: 1px solid #AAB5BD;
+    border-radius: 5px;
+}
+
+QFrame#resultCard:hover {
+    background: #FFFFFF;
+    border-color: #C9822B;
+}
+
+QPushButton#indicatorLamp {
+    min-width: 44px;
+    max-width: 44px;
+    min-height: 44px;
+    max-height: 44px;
+    padding: 0;
+    color: #FFFFFF;
+    background: #68757E;
+    border: 4px solid #D5DBDF;
+    border-radius: 22px;
+    font-family: "Cascadia Mono", "Consolas";
+    font-size: 10px;
+    font-weight: 800;
+}
+
+QPushButton#indicatorLamp[active="true"] {
+    color: #FFFFFF;
+    background: #24935F;
+    border-color: #A9DFC4;
+}
+
+QPushButton#indicatorLamp:disabled {
+    color: #FFFFFF;
+}
+
+QFrame#registerValueBox {
+    background: #E5EAED;
+    border: 1px solid #8E9BA5;
+    border-radius: 4px;
+}
+
+QLabel#registerNumber {
+    color: #1D3442;
+    font-family: "Cascadia Mono", "Consolas";
+    font-size: 17px;
+    font-weight: 800;
+}
+
+QSpinBox#registerEditor {
+    min-height: 23px;
+    padding: 1px 3px;
+    color: #1D3442;
+    background: transparent;
+    border: none;
+    font-family: "Cascadia Mono", "Consolas";
+    font-size: 16px;
+    font-weight: 800;
+}
+
+QSpinBox#registerEditor:focus {
+    background: #FFFFFF;
+    border: 1px solid #C66A0A;
+}
+
+QLabel#registerHex {
+    color: #65747F;
+    font-family: "Cascadia Mono", "Consolas";
+    font-size: 10px;
+}
+
+QLabel#resultAddress {
+    color: #43515C;
+    font-family: "Cascadia Mono", "Consolas";
+    font-size: 11px;
+    font-weight: 700;
+}
+
+QLabel#resultEmptyState {
+    color: #71808A;
+    font-size: 14px;
+}
+
 QPlainTextEdit {
     padding: 7px;
     color: #17212B;

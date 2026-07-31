@@ -9,11 +9,14 @@ QT_BEGIN_NAMESPACE
 class QCheckBox;
 class QCloseEvent;
 class QComboBox;
+class QEvent;
+class QGridLayout;
 class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
 class QPushButton;
 class QSerialPort;
+class QScrollArea;
 class QSpinBox;
 class QStackedWidget;
 class QTableWidget;
@@ -32,6 +35,7 @@ public:
 
 protected:
     void closeEvent(QCloseEvent *event) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private slots:
     void refreshPorts();
@@ -54,10 +58,16 @@ private slots:
     void saveLog();
     void toggleTheme();
     void launchNewInstance();
+    void updateResultViewMode();
 
 private:
     void buildUi();
     void applyStyle();
+    void refreshResultPanel();
+    void clearResultPanel();
+    int resultPanelColumnCount() const;
+    QString formatPlcAddress(int protocolAddress) const;
+    void setSlaveDataValue(int area, int address, quint16 value);
     void loadSettings();
     void saveSettings();
     void setConnectedState(bool connected);
@@ -106,6 +116,9 @@ private:
     quint16 m_pendingTransactionId = 0;
     quint16 m_currentTransactionId = 0;
     bool m_darkTheme = false;
+    bool m_resultIsBitData = false;
+    int m_resultAddressArea = -1;
+    int m_resultPanelColumns = 0;
     QVector<quint8> m_coils;
     QVector<quint8> m_discreteInputs;
     QVector<quint16> m_holdingRegisters;
@@ -151,6 +164,11 @@ private:
     QPushButton *m_slaveRefreshButton = nullptr;
 
     QTableWidget *m_resultTable = nullptr;
+    QComboBox *m_resultViewCombo = nullptr;
+    QStackedWidget *m_resultViewStack = nullptr;
+    QScrollArea *m_resultPanelScroll = nullptr;
+    QWidget *m_resultPanelContent = nullptr;
+    QGridLayout *m_resultPanelLayout = nullptr;
     QPlainTextEdit *m_logEdit = nullptr;
     QLineEdit *m_rawEdit = nullptr;
     QCheckBox *m_autoCrcCheck = nullptr;

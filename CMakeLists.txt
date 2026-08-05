@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(ModbusSerialAssistant VERSION 1.0.2 LANGUAGES CXX)
+project(ModbusSerialAssistant VERSION 1.0.3 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -58,6 +58,31 @@ if(BUILD_TESTING)
     target_include_directories(communicationstatistics_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(communicationstatistics_test PRIVATE Qt${QT_VERSION_MAJOR}::Core)
     add_test(NAME communicationstatistics_test COMMAND communicationstatistics_test)
+
+    add_executable(mainwindow_update_test
+        tests/mainwindow_update_test.cpp
+        mainwindow.cpp
+        mainwindow.h
+        internalchannel.cpp
+        internalchannel.h
+        communicationstatistics.cpp
+        communicationstatistics.h
+        slavedatasimulator.cpp
+        slavedatasimulator.h
+        trendchart.cpp
+        trendchart.h
+        resources.qrc
+    )
+    target_include_directories(mainwindow_update_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(mainwindow_update_test PRIVATE
+        Qt${QT_VERSION_MAJOR}::Widgets
+        Qt${QT_VERSION_MAJOR}::SerialPort
+        Qt${QT_VERSION_MAJOR}::Network
+    )
+    add_test(NAME mainwindow_update_test COMMAND mainwindow_update_test)
+    set_tests_properties(mainwindow_update_test PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
 endif()
 
 target_link_libraries(ModbusSerialAssistant PRIVATE

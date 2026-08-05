@@ -15,9 +15,50 @@ add_executable(ModbusSerialAssistant WIN32
     main.cpp
     mainwindow.cpp
     mainwindow.h
+    internalchannel.cpp
+    internalchannel.h
+    communicationstatistics.cpp
+    communicationstatistics.h
+    slavedatasimulator.cpp
+    slavedatasimulator.h
+    trendchart.cpp
+    trendchart.h
     resources.qrc
     app_icon.rc
 )
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(internalchannel_test
+        tests/internalchannel_test.cpp
+        internalchannel.cpp
+        internalchannel.h
+    )
+    target_include_directories(internalchannel_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(internalchannel_test PRIVATE
+        Qt${QT_VERSION_MAJOR}::Core
+        Qt${QT_VERSION_MAJOR}::Network
+    )
+    add_test(NAME internalchannel_test COMMAND internalchannel_test)
+
+    add_executable(slavedatasimulator_test
+        tests/slavedatasimulator_test.cpp
+        slavedatasimulator.cpp
+        slavedatasimulator.h
+    )
+    target_include_directories(slavedatasimulator_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(slavedatasimulator_test PRIVATE Qt${QT_VERSION_MAJOR}::Core)
+    add_test(NAME slavedatasimulator_test COMMAND slavedatasimulator_test)
+
+    add_executable(communicationstatistics_test
+        tests/communicationstatistics_test.cpp
+        communicationstatistics.cpp
+        communicationstatistics.h
+    )
+    target_include_directories(communicationstatistics_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(communicationstatistics_test PRIVATE Qt${QT_VERSION_MAJOR}::Core)
+    add_test(NAME communicationstatistics_test COMMAND communicationstatistics_test)
+endif()
 
 target_link_libraries(ModbusSerialAssistant PRIVATE
     Qt${QT_VERSION_MAJOR}::Widgets

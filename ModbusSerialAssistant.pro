@@ -6,10 +6,18 @@ TARGET = ModbusSerialAssistant
 
 SOURCES += \
     main.cpp \
-    mainwindow.cpp
+    mainwindow.cpp \
+    internalchannel.cpp \
+    communicationstatistics.cpp \
+    slavedatasimulator.cpp \
+    trendchart.cpp
 
 HEADERS += \
-    mainwindow.h
+    mainwindow.h \
+    internalchannel.h \
+    communicationstatistics.h \
+    slavedatasimulator.h \
+    trendchart.h
 
 RESOURCES += \
     resources.qrc

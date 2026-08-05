@@ -15,6 +15,12 @@ QWidget#fieldContainer {
     background: transparent;
 }
 
+QScrollArea#slaveControlScroll,
+QWidget#slaveControlContent {
+    background: transparent;
+    border: none;
+}
+
 QLabel#title {
     color: #17212B;
     font-size: 23px;
@@ -67,7 +73,8 @@ QLabel#statusText[error="true"] {
     color: #A72F29;
 }
 
-QLabel#counterText {
+QLabel#counterText,
+QLabel#statisticsText {
     color: #34424D;
     font-family: "Cascadia Mono", "Consolas";
     font-weight: 700;
@@ -251,6 +258,29 @@ QPushButton:disabled {
     color: #8A959D;
     background: #E5E9EC;
     border-color: #BDC5CB;
+}
+
+QMenu {
+    padding: 4px;
+    color: #17212B;
+    background: #FFFFFF;
+    border: 1px solid #8997A2;
+}
+
+QMenu::item {
+    padding: 7px 24px 7px 12px;
+    background: transparent;
+}
+
+QMenu::item:selected {
+    color: #17212B;
+    background: #F1C98E;
+}
+
+QMenu::separator {
+    height: 1px;
+    margin: 4px 6px;
+    background: #DCE3E7;
 }
 
 QPushButton#primaryButton {
@@ -440,6 +470,17 @@ QLabel#resultEmptyState {
     font-size: 14px;
 }
 
+QLabel#curveSummary {
+    color: #5D6B75;
+    padding-left: 10px;
+}
+
+TrendChartWidget#trendChart {
+    background: #FFFFFF;
+    border: 1px solid #8997A2;
+    border-radius: 3px;
+}
+
 QPlainTextEdit {
     padding: 7px;
     color: #17212B;
@@ -451,9 +492,9 @@ QPlainTextEdit {
 }
 
 QPlainTextEdit#logConsole {
-    color: #D6DEE4;
-    background: #141B20;
-    border-color: #4A5964;
+    color: #17212B;
+    background: #FFFFFF;
+    border-color: #8997A2;
 }
 
 QCheckBox {
@@ -486,6 +527,21 @@ QGroupBox#timingBox {
     background: #EDF1F3;
     border: 1px solid #AAB5BD;
     border-radius: 4px;
+}
+
+QGroupBox#simulationGroup {
+    margin-top: 10px;
+    padding-top: 7px;
+    background: #EDF1F3;
+    border: 1px solid #AAB5BD;
+    border-radius: 4px;
+}
+
+QGroupBox#simulationGroup::title {
+    left: 12px;
+    padding: 0 7px;
+    color: #34424D;
+    background: #EDF1F3;
 }
 
 QGroupBox#timingBox::title {

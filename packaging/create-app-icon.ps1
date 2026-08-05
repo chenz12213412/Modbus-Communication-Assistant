@@ -1,5 +1,5 @@
 param(
-    [string]$SourcePath = (Join-Path $PSScriptRoot '..\assets\modbus2.png'),
+    [string]$SourcePath = (Join-Path $PSScriptRoot '..\assets\modbus-icon.png'),
     [string]$OutputPath = (Join-Path $PSScriptRoot '..\assets\app-icon.ico')
 )
 
@@ -25,19 +25,21 @@ function New-LogoIconBitmap {
         $graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
 
         $margin = [Math]::Max(1, [int][Math]::Round($Size * 0.03))
+        $sourceCrop = [System.Drawing.Rectangle]::new(0, 0, $Source.Width, $Source.Height)
         $availableWidth = $Size - (2 * $margin)
         $availableHeight = $Size - (2 * $margin)
         $scale = [Math]::Min(
-            $availableWidth / [double]$Source.Width,
-            $availableHeight / [double]$Source.Height
+            $availableWidth / [double]$sourceCrop.Width,
+            $availableHeight / [double]$sourceCrop.Height
         )
-        $drawWidth = [Math]::Max(1, [int][Math]::Round($Source.Width * $scale))
-        $drawHeight = [Math]::Max(1, [int][Math]::Round($Source.Height * $scale))
+        $drawWidth = [Math]::Max(1, [int][Math]::Round($sourceCrop.Width * $scale))
+        $drawHeight = [Math]::Max(1, [int][Math]::Round($sourceCrop.Height * $scale))
         $left = [int][Math]::Round(($Size - $drawWidth) / 2)
         $top = [int][Math]::Round(($Size - $drawHeight) / 2)
 
         $destination = [System.Drawing.Rectangle]::new($left, $top, $drawWidth, $drawHeight)
-        $graphics.DrawImage($Source, $destination)
+        $graphics.DrawImage($Source, $destination, $sourceCrop,
+                            [System.Drawing.GraphicsUnit]::Pixel)
     }
     finally {
         $graphics.Dispose()

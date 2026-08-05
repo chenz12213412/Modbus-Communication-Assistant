@@ -1,6 +1,6 @@
 <RCC>
     <qresource prefix="/app">
-        <file alias="icon.png">assets/modbus2.png</file>
+        <file alias="icon.png">assets/modbus-icon.png</file>
     </qresource>
     <qresource prefix="/themes">
         <file alias="industrial.qss">styles/industrial.qss</file>

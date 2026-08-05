@@ -1,12 +1,17 @@
 param(
-    [string]$QtBinDirectory = 'D:\Qt\6.10.2\mingw_64\bin'
+    [string]$QtBinDirectory = 'D:\Qt\6.10.2\mingw_64\bin',
+    [string]$OutputExecutable = ''
 )
 
 $ErrorActionPreference = 'Stop'
 
 $projectRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $buildExecutable = Join-Path $projectRoot 'build\release\ModbusSerialAssistant.exe'
-$outputExecutable = Join-Path $projectRoot 'dist\ModbusSerialAssistant_OneFile.exe'
+$outputExecutable = if ([string]::IsNullOrWhiteSpace($OutputExecutable)) {
+    Join-Path $projectRoot 'dist\ModbusSerialAssistant_OneFile.exe'
+} else {
+    [System.IO.Path]::GetFullPath($OutputExecutable)
+}
 $applicationIcon = Join-Path $projectRoot 'assets\app-icon.ico'
 $windeployqt = Join-Path $QtBinDirectory 'windeployqt.exe'
 

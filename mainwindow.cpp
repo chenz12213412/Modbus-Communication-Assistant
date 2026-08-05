@@ -87,6 +87,7 @@ MainWindow::MainWindow(QWidget *parent)
       m_frameGapTimer(new QTimer(this)),
       m_pollTimer(new QTimer(this)),
       m_simulationTimer(new QTimer(this)),
+      m_updateManager(new QNetworkAccessManager(this)),
       m_coils(65536, 0),
       m_discreteInputs(65536, 0),
       m_holdingRegisters(65536, 0),

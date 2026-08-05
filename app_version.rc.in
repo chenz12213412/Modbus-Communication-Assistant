@@ -1,0 +1,32 @@
+#pragma code_page(65001)
+#include <windows.h>
+
+IDI_APP_ICON ICON DISCARDABLE "@CMAKE_CURRENT_SOURCE_DIR@/assets/app-icon.ico"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+ PRODUCTVERSION @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS 0x40004L
+ FILETYPE 0x1L
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "080404B0"
+        BEGIN
+            VALUE "CompanyName", "Modbus Communication Assistant\0"
+            VALUE "FileDescription", "Modbus 通讯助手\0"
+            VALUE "FileVersion", "@PROJECT_VERSION@.0\0"
+            VALUE "InternalName", "ModbusSerialAssistant\0"
+            VALUE "OriginalFilename", "ModbusSerialAssistant.exe\0"
+            VALUE "ProductName", "Modbus 通讯助手\0"
+            VALUE "ProductVersion", "@PROJECT_VERSION@.0\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0804, 1200
+    END
+END

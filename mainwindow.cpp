@@ -1,4 +1,7 @@
 #include "mainwindow.h"
+#include "internalchannel.h"
+#include "slavedatasimulator.h"
+#include "trendchart.h"
 
 #include <QAbstractItemView>
 #include <QApplication>
@@ -7,9 +10,11 @@
 #include <QColor>
 #include <QComboBox>
 #include <QDateTime>
+#include <QDir>
 #include <QEvent>
 #include <QFile>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFormLayout>
 #include <QFrame>
 #include <QGridLayout>
@@ -29,6 +34,7 @@
 #include <QSerialPort>
 #include <QSerialPortInfo>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QShortcut>
 #include <QSpinBox>
 #include <QSplitter>
@@ -67,9 +73,12 @@ MainWindow::MainWindow(QWidget *parent)
       m_serial(new QSerialPort(this)),
       m_tcpSocket(new QTcpSocket(this)),
       m_tcpServer(new QTcpServer(this)),
+      m_internalSocket(new QTcpSocket(this)),
+      m_internalServer(new QTcpServer(this)),
       m_responseTimer(new QTimer(this)),
       m_frameGapTimer(new QTimer(this)),
       m_pollTimer(new QTimer(this)),
+      m_simulationTimer(new QTimer(this)),
       m_coils(65536, 0),
       m_discreteInputs(65536, 0),
       m_holdingRegisters(65536, 0),
@@ -117,9 +126,36 @@ MainWindow::MainWindow(QWidget *parent)
         setStatus(QStringLiteral("TCP 错误：%1").arg(m_tcpSocket->errorString()), true);
     });
     connect(m_tcpServer, &QTcpServer::newConnection, this, &MainWindow::acceptTcpClient);
+    connect(m_internalServer, &QTcpServer::newConnection,
+            this, &MainWindow::acceptInternalChannelClient);
+    connect(m_internalSocket, &QTcpSocket::readyRead,
+            this, &MainWindow::readInternalChannelData);
+    connect(m_internalSocket, &QTcpSocket::connected, this, [this] {
+        setConnectedState(true);
+        const QString name = m_channelNameEdit->text().trimmed();
+        setStatus(QStringLiteral("已加入内部通道：%1").arg(name));
+        appendLog(QStringLiteral("SYS"), {},
+                  QStringLiteral("内部通道已连接：%1").arg(name));
+    });
+    connect(m_internalSocket, &QTcpSocket::disconnected, this, [this] {
+        m_responseTimer->stop();
+        m_waitingForResponse = false;
+        setBusyState(false);
+        setConnectedState(false);
+        setStatus(QStringLiteral("内部通道连接已断开"));
+    });
+    connect(m_internalSocket, &QTcpSocket::errorOccurred, this,
+            [this](QAbstractSocket::SocketError error) {
+        if (!isInternalChannelMode() || error == QAbstractSocket::RemoteHostClosedError)
+            return;
+        setConnectedState(false);
+        setStatus(QStringLiteral("无法加入内部通道，请先在另一个实例中创建同名通道"), true);
+    });
     connect(m_responseTimer, &QTimer::timeout, this, &MainWindow::handleResponseTimeout);
     connect(m_frameGapTimer, &QTimer::timeout, this, &MainWindow::processReceivedFrame);
     connect(m_pollTimer, &QTimer::timeout, this, &MainWindow::sendRequest);
+    connect(m_simulationTimer, &QTimer::timeout,
+            this, &MainWindow::generateSimulationData);
     connect(m_functionCombo, qOverload<int>(&QComboBox::currentIndexChanged),
             this, &MainWindow::updateFunctionUi);
     connect(m_modeCombo, qOverload<int>(&QComboBox::currentIndexChanged),
@@ -130,21 +166,55 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_pollIntervalSpin, qOverload<int>(&QSpinBox::valueChanged),
             this, [this](int interval) { m_pollTimer->setInterval(interval); });
     connect(m_slaveAreaCombo, qOverload<int>(&QComboBox::currentIndexChanged),
-            this, &MainWindow::refreshSlaveDataTable);
+            this, [this] {
+        if (m_simulationEnabledCheck->isChecked())
+            m_simulationEnabledCheck->setChecked(false);
+        updateSimulationUi();
+        refreshSlaveDataTable();
+    });
     connect(m_slaveViewStartSpin, qOverload<int>(&QSpinBox::valueChanged),
-            this, &MainWindow::refreshSlaveDataTable);
+            this, [this] {
+        if (m_simulationEnabledCheck->isChecked())
+            m_simulationEnabledCheck->setChecked(false);
+        refreshSlaveDataTable();
+    });
     connect(m_slaveViewCountSpin, qOverload<int>(&QSpinBox::valueChanged),
-            this, &MainWindow::refreshSlaveDataTable);
+            this, [this] {
+        if (m_simulationEnabledCheck->isChecked())
+            m_simulationEnabledCheck->setChecked(false);
+        refreshSlaveDataTable();
+    });
     connect(m_slaveRefreshButton, &QPushButton::clicked,
             this, &MainWindow::refreshSlaveDataTable);
+    connect(m_simulationEnabledCheck, &QCheckBox::toggled,
+            this, &MainWindow::toggleSimulation);
+    connect(m_simulationModeCombo, qOverload<int>(&QComboBox::currentIndexChanged),
+            this, [this] {
+        resetSimulationPhase();
+        updateSimulationUi();
+    });
+    connect(m_simulationResetButton, &QPushButton::clicked,
+            this, &MainWindow::resetSimulationPhase);
+    connect(m_simulationRestoreButton, &QPushButton::clicked,
+            this, &MainWindow::restoreSimulationData);
     connect(m_resultTable, &QTableWidget::cellChanged,
             this, &MainWindow::updateSlaveDataFromTable);
     connect(m_resultViewCombo, qOverload<int>(&QComboBox::currentIndexChanged),
             this, &MainWindow::updateResultViewMode);
+    connect(m_trendPointLimitSpin, qOverload<int>(&QSpinBox::valueChanged),
+            this, [this](int maximum) {
+        m_trendChart->setMaximumSamples(maximum);
+        updateTrendSummary();
+    });
+    connect(m_trendPauseCheck, &QCheckBox::toggled, this, [this](bool paused) {
+        updateTrendSummary(paused ? QStringLiteral("曲线已暂停，数据解析仍正常更新")
+                                  : QStringLiteral("曲线已继续采样"));
+    });
 
     loadSettings();
     refreshPorts();
     updateFunctionUi();
+    updateSimulationUi();
     updateProtocolUi();
     updateModeUi();
     setConnectedState(false);
@@ -157,6 +227,7 @@ MainWindow::~MainWindow()
         m_serial->close();
     m_tcpSocket->abort();
     m_tcpServer->close();
+    closeInternalChannel();
 }
 
 void MainWindow::closeEvent(QCloseEvent *event)
@@ -179,8 +250,8 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 void MainWindow::buildUi()
 {
     setWindowTitle(QStringLiteral("Modbus 通讯助手"));
-    resize(1180, 760);
-    setMinimumSize(980, 650);
+    resize(1480, 820);
+    setMinimumSize(1280, 720);
 
     auto *central = new QWidget(this);
     central->setObjectName(QStringLiteral("appRoot"));
@@ -226,6 +297,7 @@ void MainWindow::buildUi()
     m_protocolCombo->addItem(QStringLiteral("Modbus RTU"), 0);
     m_protocolCombo->addItem(QStringLiteral("Modbus ASCII"), 1);
     m_protocolCombo->addItem(QStringLiteral("Modbus TCP"), 2);
+    m_protocolCombo->addItem(QStringLiteral("内部虚拟通道"), 3);
     m_protocolCombo->setMinimumWidth(125);
     m_protocolCombo->view()->setMinimumWidth(180);
     m_modeCombo = new QComboBox;
@@ -277,6 +349,10 @@ void MainWindow::buildUi()
     m_tcpPortSpin->setRange(1, 65535);
     m_tcpPortSpin->setValue(502);
     m_tcpPortSpin->setMinimumWidth(100);
+    m_channelNameEdit = new QLineEdit;
+    m_channelNameEdit->setPlaceholderText(QStringLiteral("例如：生产线_1"));
+    m_channelNameEdit->setMaxLength(32);
+    m_channelNameEdit->setMinimumWidth(240);
     m_openButton = new QPushButton(QStringLiteral("打开串口"));
     m_openButton->setObjectName(QStringLiteral("primaryButton"));
     m_openButton->setMinimumWidth(108);
@@ -303,6 +379,7 @@ void MainWindow::buildUi()
     auto *flowField = makeCommunicationField(QStringLiteral("流控"), m_flowControlCombo);
     auto *hostField = makeCommunicationField(QStringLiteral("IP 地址 / 主机名"), m_hostEdit);
     auto *tcpPortField = makeCommunicationField(QStringLiteral("TCP 端口"), m_tcpPortSpin);
+    auto *channelField = makeCommunicationField(QStringLiteral("通道名称"), m_channelNameEdit);
 
     serialLayout->addWidget(protocolField, 0, 0, 2, 1, Qt::AlignTop);
     serialLayout->addWidget(modeField, 0, 1, 2, 1, Qt::AlignTop);
@@ -315,7 +392,8 @@ void MainWindow::buildUi()
     serialLayout->addWidget(flowField, 1, 5);
     serialLayout->addWidget(hostField, 0, 2, 1, 3);
     serialLayout->addWidget(tcpPortField, 0, 5);
-    serialLayout->addWidget(m_openButton, 0, 6, 2, 1, Qt::AlignVCenter);
+    serialLayout->addWidget(channelField, 0, 2, 1, 4);
+    serialLayout->addWidget(m_openButton, 0, 6, 1, 1, Qt::AlignBottom);
     serialLayout->setColumnStretch(2, 2);
     serialLayout->setColumnStretch(3, 1);
     serialLayout->setColumnStretch(5, 1);
@@ -326,6 +404,7 @@ void MainWindow::buildUi()
     m_serialFieldContainers << baudField << dataBitsField << parityField
                             << stopBitsField << flowField;
     m_tcpFieldContainers << hostField << tcpPortField;
+    m_internalFieldContainers << channelField;
     root->addWidget(serialGroup);
 
     auto *splitter = new QSplitter(Qt::Horizontal);
@@ -397,7 +476,7 @@ void MainWindow::buildUi()
     m_timeoutSpin->setSuffix(QStringLiteral(" ms"));
     m_pollCheck = new QCheckBox(QStringLiteral("启用定时轮询"));
     m_pollIntervalSpin = new QSpinBox;
-    m_pollIntervalSpin->setRange(100, 60000);
+    m_pollIntervalSpin->setRange(1, 60000);
     m_pollIntervalSpin->setValue(1000);
     m_pollIntervalSpin->setSuffix(QStringLiteral(" ms"));
     timingLayout->addRow(QStringLiteral("响应超时"), m_timeoutSpin);
@@ -408,6 +487,7 @@ void MainWindow::buildUi()
     m_controlStack->addWidget(m_masterControls);
 
     m_slaveControls = new QWidget;
+    m_slaveControls->setObjectName(QStringLiteral("slaveControlContent"));
     auto *slaveLayout = new QVBoxLayout(m_slaveControls);
     slaveLayout->setContentsMargins(0, 0, 0, 0);
     slaveLayout->setSpacing(12);
@@ -440,6 +520,63 @@ void MainWindow::buildUi()
     slaveForm->addRow(QStringLiteral("显示数量"), m_slaveViewCountSpin);
     slaveLayout->addLayout(slaveForm);
 
+    m_simulationGroup = new QGroupBox(QStringLiteral("自动数据"));
+    m_simulationGroup->setObjectName(QStringLiteral("simulationGroup"));
+    m_simulationGroup->setMinimumWidth(0);
+    m_simulationGroup->setMaximumWidth(900);
+    m_simulationGroup->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    auto *simulationLayout = new QHBoxLayout(m_simulationGroup);
+    simulationLayout->setContentsMargins(12, 14, 12, 10);
+    simulationLayout->setSpacing(10);
+    m_simulationEnabledCheck = new QCheckBox(QStringLiteral("启用自动仿真"));
+    simulationLayout->addWidget(m_simulationEnabledCheck, 0, Qt::AlignVCenter);
+
+    auto *simulationCommonForm = new QFormLayout;
+    simulationCommonForm->setHorizontalSpacing(10);
+    simulationCommonForm->setVerticalSpacing(6);
+    m_simulationModeCombo = new QComboBox;
+    m_simulationModeCombo->setMinimumWidth(170);
+    m_simulationModeCombo->setMaximumWidth(210);
+    simulationCommonForm->addRow(QStringLiteral("模式"), m_simulationModeCombo);
+    simulationLayout->addLayout(simulationCommonForm);
+
+    m_simulationParameterForm = new QFormLayout;
+    m_simulationParameterForm->setHorizontalSpacing(10);
+    m_simulationParameterForm->setVerticalSpacing(6);
+    m_simulationStepSpin = new QSpinBox;
+    m_simulationStepSpin->setRange(1, 65535);
+    m_simulationStepSpin->setValue(1);
+    m_simulationStepSpin->setMinimumWidth(120);
+    m_simulationStepSpin->setMaximumWidth(140);
+    m_simulationProbabilitySpin = new QSpinBox;
+    m_simulationProbabilitySpin->setRange(0, 100);
+    m_simulationProbabilitySpin->setValue(50);
+    m_simulationProbabilitySpin->setSuffix(QStringLiteral(" %"));
+    m_simulationProbabilitySpin->setMinimumWidth(120);
+    m_simulationProbabilitySpin->setMaximumWidth(140);
+    m_simulationDirectionCombo = new QComboBox;
+    m_simulationDirectionCombo->addItem(QStringLiteral("正向"), false);
+    m_simulationDirectionCombo->addItem(QStringLiteral("反向"), true);
+    m_simulationDirectionCombo->setMinimumWidth(120);
+    m_simulationDirectionCombo->setMaximumWidth(140);
+    m_simulationParameterForm->addRow(QStringLiteral("递增步长"), m_simulationStepSpin);
+    m_simulationParameterForm->addRow(QStringLiteral("接通概率"), m_simulationProbabilitySpin);
+    m_simulationParameterForm->addRow(QStringLiteral("流水方向"), m_simulationDirectionCombo);
+    simulationLayout->addLayout(m_simulationParameterForm);
+    simulationLayout->addStretch();
+
+    auto *simulationButtons = new QHBoxLayout;
+    simulationButtons->setSpacing(8);
+    m_simulationResetButton = new QPushButton(QStringLiteral("重置相位"));
+    m_simulationResetButton->setObjectName(QStringLiteral("secondaryButton"));
+    m_simulationResetButton->setMinimumWidth(104);
+    m_simulationRestoreButton = new QPushButton(QStringLiteral("恢复手动值"));
+    m_simulationRestoreButton->setObjectName(QStringLiteral("secondaryButton"));
+    m_simulationRestoreButton->setMinimumWidth(112);
+    simulationButtons->addWidget(m_simulationResetButton);
+    simulationButtons->addWidget(m_simulationRestoreButton);
+    simulationLayout->addLayout(simulationButtons);
+
     m_slaveRefreshButton = new QPushButton(QStringLiteral("刷新从站数据"));
     m_slaveRefreshButton->setObjectName(QStringLiteral("secondaryButton"));
     slaveLayout->addWidget(m_slaveRefreshButton);
@@ -449,7 +586,14 @@ void MainWindow::buildUi()
     slaveNote->setWordWrap(true);
     slaveLayout->addWidget(slaveNote);
     slaveLayout->addStretch();
-    m_controlStack->addWidget(m_slaveControls);
+    auto *slaveScroll = new QScrollArea;
+    slaveScroll->setObjectName(QStringLiteral("slaveControlScroll"));
+    slaveScroll->setWidgetResizable(true);
+    slaveScroll->setFrameShape(QFrame::NoFrame);
+    slaveScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    slaveScroll->setWidget(m_slaveControls);
+    m_slavePage = slaveScroll;
+    m_controlStack->addWidget(m_slavePage);
 
     requestLayout->addWidget(m_controlStack, 1);
 
@@ -459,28 +603,34 @@ void MainWindow::buildUi()
     requestLayout->addWidget(m_sendButton);
     splitter->addWidget(requestPanel);
 
-    auto *tabs = new QTabWidget;
-    tabs->setDocumentMode(true);
+    m_tabs = new QTabWidget;
+    m_tabs->setDocumentMode(true);
 
     auto *resultPage = new QWidget;
     auto *resultLayout = new QVBoxLayout(resultPage);
     resultLayout->setContentsMargins(10, 12, 10, 10);
     auto *resultTools = new QHBoxLayout;
-    auto *resultHint = new QLabel(QStringLiteral("解析结果"));
-    resultHint->setObjectName(QStringLiteral("sectionTitle"));
-    resultTools->addWidget(resultHint);
+    m_resultTitleLabel = new QLabel(QStringLiteral("解析结果"));
+    m_resultTitleLabel->setObjectName(QStringLiteral("sectionTitle"));
+    resultTools->addWidget(m_resultTitleLabel);
     resultTools->addStretch();
+    resultLayout->addLayout(resultTools);
+
+    auto *resultOptions = new QHBoxLayout;
+    resultOptions->setSpacing(6);
+    resultOptions->addWidget(m_simulationGroup, 1);
     auto *resultModeLabel = new QLabel(QStringLiteral("显示方式"));
     resultModeLabel->setObjectName(QStringLiteral("caption"));
     m_resultViewCombo = new QComboBox;
     m_resultViewCombo->addItem(QStringLiteral("表格模式"), 0);
     m_resultViewCombo->addItem(QStringLiteral("面板模式"), 1);
-    m_resultViewCombo->setMinimumWidth(112);
-    m_resultViewCombo->view()->setMinimumWidth(132);
+    m_resultViewCombo->setMinimumWidth(108);
+    m_resultViewCombo->setMaximumWidth(124);
+    m_resultViewCombo->view()->setMinimumWidth(128);
     m_resultViewCombo->setAccessibleName(QStringLiteral("数据解析显示方式"));
-    resultTools->addWidget(resultModeLabel);
-    resultTools->addWidget(m_resultViewCombo);
-    resultLayout->addLayout(resultTools);
+    resultOptions->addWidget(resultModeLabel, 0, Qt::AlignVCenter);
+    resultOptions->addWidget(m_resultViewCombo, 0, Qt::AlignVCenter);
+    resultLayout->addLayout(resultOptions);
 
     m_resultViewStack = new QStackedWidget;
     m_resultTable = new QTableWidget(0, 4);
@@ -510,7 +660,44 @@ void MainWindow::buildUi()
     m_resultPanelScroll->viewport()->installEventFilter(this);
     m_resultViewStack->addWidget(m_resultPanelScroll);
     resultLayout->addWidget(m_resultViewStack);
-    tabs->addTab(resultPage, QStringLiteral("数据解析"));
+    m_tabs->addTab(resultPage, QStringLiteral("数据解析"));
+
+    auto *trendPage = new QWidget;
+    auto *trendLayout = new QVBoxLayout(trendPage);
+    trendLayout->setContentsMargins(10, 12, 10, 10);
+    trendLayout->setSpacing(10);
+    auto *trendTools = new QHBoxLayout;
+    auto *trendTitle = new QLabel(QStringLiteral("主站趋势曲线"));
+    trendTitle->setObjectName(QStringLiteral("sectionTitle"));
+    trendTools->addWidget(trendTitle);
+    m_trendSummaryLabel = new QLabel(QStringLiteral("等待主站读取数据"));
+    m_trendSummaryLabel->setObjectName(QStringLiteral("curveSummary"));
+    trendTools->addWidget(m_trendSummaryLabel);
+    trendTools->addStretch();
+    m_trendPauseCheck = new QCheckBox(QStringLiteral("暂停"));
+    m_trendPauseCheck->setToolTip(QStringLiteral("暂停曲线采样，不影响数据解析和通讯"));
+    trendTools->addWidget(m_trendPauseCheck);
+    auto *pointLimitLabel = new QLabel(QStringLiteral("保留"));
+    pointLimitLabel->setObjectName(QStringLiteral("caption"));
+    trendTools->addWidget(pointLimitLabel);
+    m_trendPointLimitSpin = new QSpinBox;
+    m_trendPointLimitSpin->setRange(20, 500);
+    m_trendPointLimitSpin->setValue(120);
+    m_trendPointLimitSpin->setSuffix(QStringLiteral(" 点"));
+    m_trendPointLimitSpin->setMinimumWidth(92);
+    m_trendPointLimitSpin->setToolTip(QStringLiteral("每条曲线最多保留的历史采样点数"));
+    trendTools->addWidget(m_trendPointLimitSpin);
+    auto *clearTrendButton = new QPushButton(QStringLiteral("清空曲线"));
+    clearTrendButton->setObjectName(QStringLiteral("secondaryButton"));
+    clearTrendButton->setToolTip(QStringLiteral("清除当前所有趋势历史"));
+    trendTools->addWidget(clearTrendButton);
+    trendLayout->addLayout(trendTools);
+    m_trendChart = new TrendChartWidget;
+    m_trendChart->setObjectName(QStringLiteral("trendChart"));
+    trendLayout->addWidget(m_trendChart, 1);
+    connect(clearTrendButton, &QPushButton::clicked,
+            this, &MainWindow::clearTrendData);
+    m_tabs->addTab(trendPage, QStringLiteral("趋势曲线"));
 
     auto *logPage = new QWidget;
     auto *logLayout = new QVBoxLayout(logPage);
@@ -538,7 +725,7 @@ void MainWindow::buildUi()
     logLayout->addWidget(m_logEdit);
     connect(clearButton, &QPushButton::clicked, this, &MainWindow::clearLog);
     connect(saveButton, &QPushButton::clicked, this, &MainWindow::saveLog);
-    tabs->addTab(logPage, QStringLiteral("通讯日志"));
+    m_tabs->addTab(logPage, QStringLiteral("通讯日志"));
 
     auto *rawPage = new QWidget;
     auto *rawLayout = new QVBoxLayout(rawPage);
@@ -568,9 +755,9 @@ void MainWindow::buildUi()
     rawActions->addWidget(m_rawSendButton);
     rawLayout->addLayout(rawActions);
     rawLayout->addStretch();
-    tabs->addTab(rawPage, QStringLiteral("原始报文"));
+    m_tabs->addTab(rawPage, QStringLiteral("原始报文"));
 
-    splitter->addWidget(tabs);
+    splitter->addWidget(m_tabs);
     splitter->setStretchFactor(0, 0);
     splitter->setStretchFactor(1, 1);
     splitter->setSizes({355, 760});
@@ -584,9 +771,13 @@ void MainWindow::buildUi()
     m_statusLabel->setObjectName(QStringLiteral("statusText"));
     m_counterLabel = new QLabel(QStringLiteral("TX 0  ·  RX 0"));
     m_counterLabel->setObjectName(QStringLiteral("counterText"));
+    m_statisticsLabel = new QLabel(m_communicationStatistics.displayText());
+    m_statisticsLabel->setObjectName(QStringLiteral("statisticsText"));
     bottom->addWidget(m_statusLabel);
     bottom->addStretch();
     bottom->addWidget(m_counterLabel);
+    bottom->addSpacing(16);
+    bottom->addWidget(m_statisticsLabel);
     root->addWidget(bottomBar);
 
     setCentralWidget(central);
@@ -601,7 +792,8 @@ void MainWindow::buildUi()
     m_rawEdit->setAccessibleName(QStringLiteral("自定义十六进制请求"));
     m_protocolCombo->setToolTip(QStringLiteral("选择 RTU、ASCII 或 TCP 通讯协议"));
     m_modeCombo->setToolTip(QStringLiteral("主站主动请求；从站监听并响应"));
-    m_resultTable->setToolTip(QStringLiteral("从站模式下可双击当前值进行编辑"));
+    m_resultTable->setToolTip(QStringLiteral(
+        "从站模式下可双击当前值进行编辑；自动仿真范围内的数据由仿真器控制"));
 
     auto *refreshShortcut = new QShortcut(QKeySequence::Refresh, this);
     connect(refreshShortcut, &QShortcut::activated, this, &MainWindow::refreshPorts);
@@ -622,6 +814,8 @@ void MainWindow::applyStyle()
             styleSheet += QStringLiteral("\n") + QString::fromUtf8(darkThemeFile.readAll());
     }
     setStyleSheet(styleSheet);
+    if (m_trendChart)
+        m_trendChart->setDarkTheme(m_darkTheme);
 
     if (m_themeButton) {
         m_themeButton->setText(m_darkTheme
@@ -647,6 +841,67 @@ void MainWindow::updateResultViewMode()
     QSettings settings;
     settings.setValue(QStringLiteral("appearance/resultViewMode"),
                       m_resultViewCombo->currentData());
+}
+
+void MainWindow::appendTrendSample()
+{
+    if (!m_trendChart || !m_resultTable || isSlaveMode()
+        || (m_trendPauseCheck && m_trendPauseCheck->isChecked())) {
+        return;
+    }
+
+    QStringList names;
+    QVector<double> values;
+    names.reserve(m_resultTable->rowCount());
+    values.reserve(m_resultTable->rowCount());
+    for (int row = 0; row < m_resultTable->rowCount(); ++row) {
+        if (names.size() >= 8)
+            break;
+        const QTableWidgetItem *addressItem = m_resultTable->item(row, 0);
+        const QTableWidgetItem *valueItem = m_resultTable->item(row, 1);
+        if (!addressItem || !valueItem)
+            continue;
+        bool ok = false;
+        const double value = valueItem->text().toDouble(&ok);
+        if (!ok)
+            continue;
+        names.append(addressItem->text());
+        values.append(value);
+    }
+
+    if (names.isEmpty())
+        return;
+
+    const bool reset = m_trendChart->appendSample(names, values);
+    updateTrendSummary(reset ? QStringLiteral("读取地址已变化，已开始新的曲线组")
+                             : QString());
+}
+
+void MainWindow::clearTrendData()
+{
+    if (!m_trendChart)
+        return;
+    m_trendChart->clearSamples();
+    updateTrendSummary(QStringLiteral("曲线历史已清空"));
+}
+
+void MainWindow::updateTrendSummary(const QString &message)
+{
+    if (!m_trendSummaryLabel || !m_trendChart)
+        return;
+
+    if (!message.isEmpty()) {
+        m_trendSummaryLabel->setText(message);
+        return;
+    }
+    if (m_trendChart->sampleCount() == 0) {
+        m_trendSummaryLabel->setText(QStringLiteral("等待主站读取数据"));
+        return;
+    }
+    m_trendSummaryLabel->setText(
+        QStringLiteral("%1 条曲线 · %2 个采样点")
+            .arg(m_trendChart->seriesCount())
+            .arg(m_trendChart->sampleCount()));
 }
 
 void MainWindow::clearResultPanel()
@@ -690,6 +945,11 @@ void MainWindow::setSlaveDataValue(int area, int address, quint16 value)
 {
     if (!isSlaveMode() || area < 0 || area > 3 || address < 0 || address >= 65536)
         return;
+    if (isAddressSimulated(area, address)) {
+        setStatus(QStringLiteral("地址 %1 正由自动仿真控制，请先停止仿真")
+                      .arg(formatPlcAddress(address)), true);
+        return;
+    }
 
     if (area == 0)
         m_coils[address] = value ? 1 : 0;
@@ -715,7 +975,10 @@ void MainWindow::refreshResultPanel()
     m_resultPanelColumns = columns;
 
     if (m_resultTable->rowCount() == 0) {
-        auto *emptyLabel = new QLabel(QStringLiteral("暂无解析数据"), m_resultPanelContent);
+        auto *emptyLabel = new QLabel(
+            isSlaveMode() ? QStringLiteral("暂无仿真数据")
+                          : QStringLiteral("暂无解析数据"),
+            m_resultPanelContent);
         emptyLabel->setObjectName(QStringLiteral("resultEmptyState"));
         emptyLabel->setAlignment(Qt::AlignCenter);
         emptyLabel->setMinimumHeight(160);
@@ -760,8 +1023,11 @@ void MainWindow::refreshResultPanel()
             indicator->setAccessibleName(
                 QStringLiteral("PLC 地址 %1，当前 %2").arg(address,
                     active ? QStringLiteral("接通") : QStringLiteral("断开")));
-            indicator->setEnabled(isSlaveMode());
-            if (isSlaveMode()) {
+            const bool editable = isSlaveMode()
+                                  && !isAddressSimulated(m_resultAddressArea,
+                                                         protocolAddress);
+            indicator->setEnabled(editable);
+            if (editable) {
                 const int area = m_resultAddressArea;
                 connect(indicator, &QPushButton::clicked, this,
                         [this, area, protocolAddress, active] {
@@ -776,7 +1042,8 @@ void MainWindow::refreshResultPanel()
             valueLayout->setContentsMargins(6, 7, 6, 6);
             valueLayout->setSpacing(1);
             QWidget *decimalWidget = nullptr;
-            if (isSlaveMode() && valueOk) {
+            if (isSlaveMode() && valueOk
+                && !isAddressSimulated(m_resultAddressArea, protocolAddress)) {
                 auto *editor = new QSpinBox(valueBox);
                 editor->setObjectName(QStringLiteral("registerEditor"));
                 editor->setRange(0, 65535);
@@ -870,6 +1137,40 @@ void MainWindow::refreshPorts()
 
 void MainWindow::toggleSerialPort()
 {
+    if (isInternalChannelMode()) {
+        if (isTransportOpen()) {
+            closeInternalChannel();
+            setConnectedState(false);
+            setStatus(QStringLiteral("内部通道已关闭"));
+            return;
+        }
+
+        QString error;
+        const QString name = m_channelNameEdit->text().trimmed();
+        if (!InternalChannel::validateName(name, &error)) {
+            setStatus(error, true);
+            m_channelNameEdit->setFocus();
+            return;
+        }
+        const quint16 port = InternalChannel::portForName(name);
+        m_receiveBuffer.clear();
+        if (isSlaveMode()) {
+            if (!m_internalServer->listen(QHostAddress::LocalHost, port)) {
+                setStatus(QStringLiteral("无法创建内部通道：名称可能已被占用"), true);
+                return;
+            }
+            setConnectedState(true);
+            setStatus(QStringLiteral("内部通道 %1 已创建，等待主站加入").arg(name));
+            appendLog(QStringLiteral("SYS"), {},
+                      QStringLiteral("内部通道已创建：%1").arg(name));
+        } else {
+            m_openButton->setEnabled(false);
+            setStatus(QStringLiteral("正在加入内部通道 %1…").arg(name));
+            m_internalSocket->connectToHost(QHostAddress::LocalHost, port);
+        }
+        return;
+    }
+
     if (isTcpMode()) {
         if (isSlaveMode()) {
             if (m_tcpServer->isListening()) {
@@ -978,7 +1279,10 @@ void MainWindow::toggleSerialPort()
 void MainWindow::setConnectedState(bool connected)
 {
     m_openButton->setEnabled(true);
-    if (isTcpMode()) {
+    if (isInternalChannelMode()) {
+        m_openButton->setText(connected ? QStringLiteral("关闭通道")
+            : (isSlaveMode() ? QStringLiteral("创建通道") : QStringLiteral("加入通道")));
+    } else if (isTcpMode()) {
         m_openButton->setText(connected
             ? (isSlaveMode() ? QStringLiteral("停止监听") : QStringLiteral("断开连接"))
             : (isSlaveMode() ? QStringLiteral("开始监听") : QStringLiteral("连接")));
@@ -990,21 +1294,23 @@ void MainWindow::setConnectedState(bool connected)
     protocolName.remove(QStringLiteral("Modbus "));
     const QString modeName = isSlaveMode() ? QStringLiteral("从站") : QStringLiteral("主站");
     const QString connectionState = connected
-        ? (isTcpMode() && isSlaveMode() ? QStringLiteral("监听中") : QStringLiteral("已连接"))
+        ? ((isTcpMode() || isInternalChannelMode()) && isSlaveMode()
+               ? QStringLiteral("监听中") : QStringLiteral("已连接"))
         : QStringLiteral("未连接");
     m_connectionBadge->setText(
         QStringLiteral("%1 · %2 · %3").arg(protocolName, modeName, connectionState));
     m_connectionBadge->setProperty("connected", connected);
 
     const QList<QWidget *> configurationWidgets{
-        m_protocolCombo, m_modeCombo, m_portCombo, m_refreshButton, m_baudCombo, m_dataBitsCombo,
-        m_parityCombo, m_stopBitsCombo, m_flowControlCombo
+        m_protocolCombo, m_modeCombo, m_portCombo, m_refreshButton,
+        m_baudCombo, m_dataBitsCombo, m_parityCombo, m_stopBitsCombo, m_flowControlCombo
     };
     for (QWidget *widget : configurationWidgets) {
         widget->setEnabled(!connected);
     }
     m_hostEdit->setEnabled(!connected);
     m_tcpPortSpin->setEnabled(!connected);
+    m_channelNameEdit->setEnabled(!connected);
     m_sendButton->setEnabled(connected && !isSlaveMode());
     m_rawSendButton->setEnabled(connected && !isSlaveMode());
     m_pollCheck->setEnabled(connected && !isSlaveMode());
@@ -1076,8 +1382,17 @@ bool MainWindow::isAsciiMode() const
     return m_protocolCombo && m_protocolCombo->currentData().toInt() == 1;
 }
 
+bool MainWindow::isInternalChannelMode() const
+{
+    return m_protocolCombo && m_protocolCombo->currentData().toInt() == 3;
+}
+
 bool MainWindow::isTransportOpen() const
 {
+    if (isInternalChannelMode()) {
+        return isSlaveMode() ? m_internalServer->isListening()
+                             : m_internalSocket->state() == QAbstractSocket::ConnectedState;
+    }
     if (isTcpMode()) {
         return isSlaveMode() ? m_tcpServer->isListening()
                              : m_tcpSocket->state() == QAbstractSocket::ConnectedState;
@@ -1088,10 +1403,13 @@ bool MainWindow::isTransportOpen() const
 void MainWindow::updateProtocolUi()
 {
     const bool tcp = isTcpMode();
+    const bool internal = isInternalChannelMode();
     for (QWidget *widget : m_serialFieldContainers)
-        widget->setVisible(!tcp);
+        widget->setVisible(!tcp && !internal);
     for (QWidget *widget : m_tcpFieldContainers)
         widget->setVisible(tcp);
+    for (QWidget *widget : m_internalFieldContainers)
+        widget->setVisible(internal);
 
     m_rawSendButton->setText(tcp ? QStringLiteral("发送 TCP 请求")
                                  : isAsciiMode() ? QStringLiteral("发送 ASCII 请求")
@@ -1109,7 +1427,9 @@ void MainWindow::updateProtocolUi()
         m_autoCrcCheck->setEnabled(true);
     }
     setConnectedState(isTransportOpen());
-    if (tcp) {
+    if (internal) {
+        setStatus(QStringLiteral("已选择内部虚拟通道，请输入通道名称"));
+    } else if (tcp) {
         setStatus(QStringLiteral("已选择 Modbus TCP，请设置 IP 地址和端口"));
     } else if (isAsciiMode()) {
         setStatus(QStringLiteral("已选择 Modbus ASCII，使用串口传输和 LRC 校验"));
@@ -1121,8 +1441,15 @@ void MainWindow::updateProtocolUi()
 void MainWindow::updateModeUi()
 {
     const bool slaveMode = isSlaveMode();
-    m_controlStack->setCurrentWidget(slaveMode ? m_slaveControls : m_masterControls);
-    m_requestTitle->setText(slaveMode ? QStringLiteral("从站仿真") : QStringLiteral("主站请求"));
+    if (!slaveMode && m_simulationTimer->isActive())
+        stopSimulation(QStringLiteral("已切换到主站模式，自动仿真已停止"));
+    m_controlStack->setCurrentWidget(slaveMode ? m_slavePage : m_masterControls);
+    m_requestTitle->setText(slaveMode ? QStringLiteral("数据仿真") : QStringLiteral("主站请求"));
+    m_resultTitleLabel->setText(slaveMode ? QStringLiteral("从站数据仿真")
+                                          : QStringLiteral("解析结果"));
+    m_simulationGroup->setVisible(slaveMode);
+    m_tabs->setTabText(0, slaveMode ? QStringLiteral("数据仿真")
+                                    : QStringLiteral("数据解析"));
     m_sendButton->setVisible(!slaveMode);
     m_pollCheck->setChecked(false);
 
@@ -1130,7 +1457,9 @@ void MainWindow::updateModeUi()
         m_resultTable->setEditTriggers(
             QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
         refreshSlaveDataTable();
-        setStatus(QStringLiteral("已切换到从站模式，打开串口后开始监听"));
+        setStatus(isInternalChannelMode()
+            ? QStringLiteral("已切换到从站模式，创建通道后等待主站加入")
+            : QStringLiteral("已切换到从站模式，打开通讯后开始监听"));
     } else {
         m_resultTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
         m_resultTable->setRowCount(0);
@@ -1142,7 +1471,242 @@ void MainWindow::updateModeUi()
         refreshResultPanel();
         setStatus(QStringLiteral("已切换到主站模式"));
     }
+    updateSimulationUi();
     setConnectedState(isTransportOpen());
+}
+
+void MainWindow::updateSimulationUi()
+{
+    if (!m_simulationModeCombo || !m_slaveAreaCombo)
+        return;
+
+    const int area = m_slaveAreaCombo->currentData().toInt();
+    const bool bitArea = area == 0 || area == 1;
+    const bool previousBitArea = m_simulationModeCombo->property("bitArea").toBool();
+    if (m_simulationModeCombo->count() == 0 || previousBitArea != bitArea) {
+        const QSignalBlocker blocker(m_simulationModeCombo);
+        m_simulationModeCombo->clear();
+        if (bitArea) {
+            m_simulationModeCombo->addItem(QStringLiteral("随机状态"),
+                                            static_cast<int>(SlaveBitMode::Random));
+            m_simulationModeCombo->addItem(QStringLiteral("流水灯"),
+                                            static_cast<int>(SlaveBitMode::Chase));
+            m_simulationModeCombo->addItem(QStringLiteral("方波 / 闪烁"),
+                                            static_cast<int>(SlaveBitMode::Blink));
+            m_simulationModeCombo->addItem(QStringLiteral("交替翻转"),
+                                            static_cast<int>(SlaveBitMode::Alternate));
+            m_simulationModeCombo->addItem(QStringLiteral("全部接通"),
+                                            static_cast<int>(SlaveBitMode::AllOn));
+            m_simulationModeCombo->addItem(QStringLiteral("全部断开"),
+                                            static_cast<int>(SlaveBitMode::AllOff));
+        } else {
+            m_simulationModeCombo->addItem(QStringLiteral("随机数"),
+                                            static_cast<int>(SlaveRegisterMode::Random));
+            m_simulationModeCombo->addItem(QStringLiteral("正弦波"),
+                                            static_cast<int>(SlaveRegisterMode::Sine));
+            m_simulationModeCombo->addItem(QStringLiteral("方波"),
+                                            static_cast<int>(SlaveRegisterMode::Square));
+            m_simulationModeCombo->addItem(QStringLiteral("三角波"),
+                                            static_cast<int>(SlaveRegisterMode::Triangle));
+            m_simulationModeCombo->addItem(QStringLiteral("递增计数"),
+                                            static_cast<int>(SlaveRegisterMode::Counter));
+            m_simulationModeCombo->addItem(QStringLiteral("锯齿波"),
+                                            static_cast<int>(SlaveRegisterMode::Sawtooth));
+            m_simulationModeCombo->addItem(QStringLiteral("高斯热噪声"),
+                                            static_cast<int>(SlaveRegisterMode::ThermalNoise));
+            m_simulationModeCombo->addItem(QStringLiteral("随机游走"),
+                                            static_cast<int>(SlaveRegisterMode::RandomWalk));
+            m_simulationModeCombo->addItem(QStringLiteral("脉冲信号"),
+                                            static_cast<int>(SlaveRegisterMode::Pulse));
+            m_simulationModeCombo->addItem(QStringLiteral("阻尼正弦"),
+                                            static_cast<int>(SlaveRegisterMode::DampedSine));
+        }
+        m_simulationModeCombo->setProperty("bitArea", bitArea);
+        if (!m_simulationModeCombo->property("savedModeApplied").toBool()) {
+            const int savedMode = m_simulationModeCombo->property("savedMode").toInt();
+            const int savedIndex = m_simulationModeCombo->findData(savedMode);
+            if (savedIndex >= 0)
+                m_simulationModeCombo->setCurrentIndex(savedIndex);
+            m_simulationModeCombo->setProperty("savedModeApplied", true);
+        }
+    }
+
+    const int mode = m_simulationModeCombo->currentData().toInt();
+    auto setRowVisible = [this](QWidget *field, bool visible) {
+        field->setVisible(visible);
+        if (QWidget *label = m_simulationParameterForm->labelForField(field))
+            label->setVisible(visible);
+    };
+    setRowVisible(m_simulationStepSpin,
+                  !bitArea && (mode == static_cast<int>(SlaveRegisterMode::Counter)
+                               || mode == static_cast<int>(SlaveRegisterMode::RandomWalk)));
+    setRowVisible(m_simulationProbabilitySpin,
+                  bitArea && mode == static_cast<int>(SlaveBitMode::Random));
+    setRowVisible(m_simulationDirectionCombo,
+                  bitArea && mode == static_cast<int>(SlaveBitMode::Chase));
+
+    m_simulationRestoreButton->setEnabled(!m_simulationBackup.isEmpty());
+}
+
+void MainWindow::toggleSimulation(bool enabled)
+{
+    if (!enabled) {
+        m_simulationTimer->stop();
+        refreshSlaveDataTable();
+        setStatus(QStringLiteral("自动数据仿真已停止，保留最后生成值"));
+        return;
+    }
+    if (!isSlaveMode()) {
+        const QSignalBlocker blocker(m_simulationEnabledCheck);
+        m_simulationEnabledCheck->setChecked(false);
+        setStatus(QStringLiteral("自动数据仿真只能在从站模式启用"), true);
+        return;
+    }
+
+    SlaveSimulationConfig config;
+    config.startAddress = m_slaveViewStartSpin->value();
+    config.count = qMin(m_slaveViewCountSpin->value(), 65536 - config.startAddress);
+    config.minimum = 0;
+    config.maximum = 1000;
+    config.stepsPerPeriod = 20;
+    config.step = static_cast<quint16>(m_simulationStepSpin->value());
+    QString error;
+    if (!SlaveDataSimulator::validate(config, &error)) {
+        const QSignalBlocker blocker(m_simulationEnabledCheck);
+        m_simulationEnabledCheck->setChecked(false);
+        setStatus(error, true);
+        return;
+    }
+
+    m_simulationArea = m_slaveAreaCombo->currentData().toInt();
+    m_simulationBackupStart = config.startAddress;
+    m_simulationBackup.clear();
+    m_simulationPreviousValues.clear();
+    m_simulationBackup.reserve(config.count);
+    for (int offset = 0; offset < config.count; ++offset) {
+        const int address = config.startAddress + offset;
+        if (m_simulationArea == 0)
+            m_simulationBackup.append(m_coils.at(address));
+        else if (m_simulationArea == 1)
+            m_simulationBackup.append(m_discreteInputs.at(address));
+        else if (m_simulationArea == 2)
+            m_simulationBackup.append(m_holdingRegisters.at(address));
+        else
+            m_simulationBackup.append(m_inputRegisters.at(address));
+    }
+    if (m_simulationArea == 2 || m_simulationArea == 3)
+        m_simulationPreviousValues.fill(
+            static_cast<quint16>((config.minimum + config.maximum) / 2), config.count);
+    m_simulationTick = 0;
+    generateSimulationData();
+    m_simulationTimer->start(500);
+    m_simulationRestoreButton->setEnabled(true);
+    setStatus(QStringLiteral("已启用%1自动仿真：显示范围 %2，数量 %3")
+                  .arg(m_slaveAreaCombo->currentText())
+                  .arg(config.startAddress).arg(config.count));
+}
+
+void MainWindow::generateSimulationData()
+{
+    if (!isSlaveMode() || !m_simulationEnabledCheck->isChecked())
+        return;
+    if (m_slaveAreaCombo->currentData().toInt() != m_simulationArea) {
+        stopSimulation(QStringLiteral("数据区已变化，自动仿真已停止"));
+        return;
+    }
+
+    SlaveSimulationConfig config;
+    config.startAddress = m_slaveViewStartSpin->value();
+    config.count = qMin(m_slaveViewCountSpin->value(), 65536 - config.startAddress);
+    config.minimum = 0;
+    config.maximum = 1000;
+    config.stepsPerPeriod = 20;
+    config.step = static_cast<quint16>(m_simulationStepSpin->value());
+    QString error;
+    if (!SlaveDataSimulator::validate(config, &error)) {
+        stopSimulation(error);
+        return;
+    }
+
+    if (m_simulationArea == 0 || m_simulationArea == 1) {
+        const auto values = SlaveDataSimulator::generateBits(
+            static_cast<SlaveBitMode>(m_simulationModeCombo->currentData().toInt()),
+            config, m_simulationTick,
+            m_simulationDirectionCombo->currentData().toBool(),
+            m_simulationProbabilitySpin->value());
+        QVector<quint8> &target = m_simulationArea == 0 ? m_coils : m_discreteInputs;
+        for (int index = 0; index < values.size(); ++index)
+            target[config.startAddress + index] = values.at(index);
+    } else {
+        const auto values = SlaveDataSimulator::generateRegisters(
+            static_cast<SlaveRegisterMode>(m_simulationModeCombo->currentData().toInt()),
+            config, m_simulationTick, m_simulationPreviousValues);
+        QVector<quint16> &target = m_simulationArea == 2
+            ? m_holdingRegisters : m_inputRegisters;
+        for (int index = 0; index < values.size(); ++index)
+            target[config.startAddress + index] = values.at(index);
+        m_simulationPreviousValues = values;
+    }
+    ++m_simulationTick;
+    refreshSlaveDataTable();
+}
+
+void MainWindow::resetSimulationPhase()
+{
+    m_simulationTick = 0;
+    if (!m_simulationPreviousValues.isEmpty()) {
+        m_simulationPreviousValues.fill(500);
+    }
+    if (m_simulationTimer->isActive())
+        generateSimulationData();
+    setStatus(QStringLiteral("仿真相位已重置"));
+}
+
+void MainWindow::restoreSimulationData()
+{
+    if (m_simulationBackup.isEmpty()) {
+        setStatus(QStringLiteral("没有可恢复的手动数据"), true);
+        return;
+    }
+    stopSimulation();
+    for (int index = 0; index < m_simulationBackup.size(); ++index) {
+        const int address = m_simulationBackupStart + index;
+        const quint16 value = m_simulationBackup.at(index);
+        if (m_simulationArea == 0)
+            m_coils[address] = value ? 1 : 0;
+        else if (m_simulationArea == 1)
+            m_discreteInputs[address] = value ? 1 : 0;
+        else if (m_simulationArea == 2)
+            m_holdingRegisters[address] = value;
+        else if (m_simulationArea == 3)
+            m_inputRegisters[address] = value;
+    }
+    m_simulationBackup.clear();
+    m_simulationPreviousValues.clear();
+    m_simulationArea = -1;
+    m_simulationRestoreButton->setEnabled(false);
+    refreshSlaveDataTable();
+    setStatus(QStringLiteral("已恢复启用仿真前的手动数据"));
+}
+
+void MainWindow::stopSimulation(const QString &message)
+{
+    m_simulationTimer->stop();
+    {
+        const QSignalBlocker blocker(m_simulationEnabledCheck);
+        m_simulationEnabledCheck->setChecked(false);
+    }
+    refreshSlaveDataTable();
+    if (!message.isEmpty())
+        setStatus(message);
+}
+
+bool MainWindow::isAddressSimulated(int area, int address) const
+{
+    return m_simulationTimer->isActive() && area == m_simulationArea
+           && address >= m_slaveViewStartSpin->value()
+           && address < m_slaveViewStartSpin->value()
+                        + m_slaveViewCountSpin->value();
 }
 
 void MainWindow::refreshSlaveDataTable()
@@ -1182,6 +1746,10 @@ void MainWindow::refreshSlaveDataTable()
         addressItem->setData(Qt::UserRole, address);
         auto *valueItem = new QTableWidgetItem(QString::number(value));
         valueItem->setData(Qt::UserRole, address);
+        if (isAddressSimulated(area, address)) {
+            valueItem->setFlags(valueItem->flags() & ~Qt::ItemIsEditable);
+            valueItem->setToolTip(QStringLiteral("该地址由自动仿真控制"));
+        }
         auto *hexItem = new QTableWidgetItem(
             QStringLiteral("0x%1").arg(value, bitArea ? 2 : 4, 16, QLatin1Char('0')).toUpper());
         hexItem->setFlags(hexItem->flags() & ~Qt::ItemIsEditable);
@@ -1313,8 +1881,9 @@ void MainWindow::sendRequest()
         return;
     }
     if (!isTransportOpen()) {
-        setStatus(isTcpMode() ? QStringLiteral("请先建立 TCP 连接")
-                              : QStringLiteral("请先打开串口"), true);
+        setStatus(isInternalChannelMode() ? QStringLiteral("请先加入内部通道")
+                  : isTcpMode() ? QStringLiteral("请先建立 TCP 连接")
+                                : QStringLiteral("请先打开串口"), true);
         return;
     }
     if (m_waitingForResponse)
@@ -1340,8 +1909,9 @@ void MainWindow::sendRawFrame()
         return;
     }
     if (!isTransportOpen()) {
-        setStatus(isTcpMode() ? QStringLiteral("请先建立 TCP 连接")
-                              : QStringLiteral("请先打开串口"), true);
+        setStatus(isInternalChannelMode() ? QStringLiteral("请先加入内部通道")
+                  : isTcpMode() ? QStringLiteral("请先建立 TCP 连接")
+                                : QStringLiteral("请先打开串口"), true);
         return;
     }
     if (m_waitingForResponse)
@@ -1379,12 +1949,21 @@ void MainWindow::writeFrame(const QByteArray &frame, const QString &description)
     } else if (isAsciiMode()) {
         wireFrame = encodeAscii(frame.left(frame.size() - 2));
     }
-    const qint64 written = isTcpMode() ? m_tcpSocket->write(wireFrame)
-                                      : m_serial->write(wireFrame);
-    if (written < 0) {
-        const QString error = isTcpMode() ? m_tcpSocket->errorString()
-                                          : m_serial->errorString();
-        setStatus(QStringLiteral("发送失败：%1").arg(error), true);
+    qint64 written = -1;
+    QString transportError;
+    if (isInternalChannelMode()) {
+        written = m_internalSocket->write(wireFrame);
+        transportError = m_internalSocket->errorString();
+    } else if (isTcpMode()) {
+        written = m_tcpSocket->write(wireFrame);
+        transportError = m_tcpSocket->errorString();
+    } else {
+        written = m_serial->write(wireFrame);
+        transportError = m_serial->errorString();
+    }
+    if (written != wireFrame.size()) {
+        setStatus(QStringLiteral("发送失败：%1").arg(transportError), true);
+        recordCommunicationResult(false);
         return;
     }
 
@@ -1438,6 +2017,46 @@ void MainWindow::acceptTcpClient()
     }
 }
 
+void MainWindow::acceptInternalChannelClient()
+{
+    while (m_internalServer->hasPendingConnections()) {
+        QTcpSocket *client = m_internalServer->nextPendingConnection();
+        if (m_internalSlaveClient
+            && m_internalSlaveClient->state() == QAbstractSocket::ConnectedState) {
+            appendLog(QStringLiteral("ERR"), {},
+                      QStringLiteral("内部通道已有主站，已拒绝新的连接"), true);
+            client->disconnectFromHost();
+            client->deleteLater();
+            continue;
+        }
+        m_internalSlaveClient = client;
+        m_receiveBuffer.clear();
+        connect(client, &QTcpSocket::readyRead,
+                this, &MainWindow::readInternalChannelData);
+        connect(client, &QTcpSocket::disconnected, this, [this, client] {
+            appendLog(QStringLiteral("SYS"), {},
+                      QStringLiteral("内部通道主站已断开"));
+            if (m_internalSlaveClient == client)
+                m_internalSlaveClient = nullptr;
+            client->deleteLater();
+            if (m_internalServer->isListening())
+                setStatus(QStringLiteral("内部通道仍在等待主站加入"));
+        });
+        setStatus(QStringLiteral("内部通道主站已加入"));
+        appendLog(QStringLiteral("SYS"), {},
+                  QStringLiteral("内部通道主站已加入"));
+    }
+}
+
+void MainWindow::readInternalChannelData()
+{
+    auto *socket = qobject_cast<QTcpSocket *>(sender());
+    if (!socket)
+        socket = m_internalSocket;
+    m_receiveBuffer.append(socket->readAll());
+    m_frameGapTimer->start();
+}
+
 void MainWindow::readTcpData()
 {
     auto *socket = qobject_cast<QTcpSocket *>(sender());
@@ -1474,6 +2093,20 @@ void MainWindow::processReceivedFrame()
 
 void MainWindow::processWireFrame(const QByteArray &wireFrame)
 {
+    const bool masterTransactionPending = !isSlaveMode() && m_waitingForResponse;
+    auto finishReceiveFailure = [this, masterTransactionPending] {
+        if (isSlaveMode()) {
+            recordCommunicationResult(false);
+            return;
+        }
+        if (!masterTransactionPending)
+            return;
+        m_responseTimer->stop();
+        m_waitingForResponse = false;
+        setBusyState(false);
+        recordCommunicationResult(false);
+    };
+
     QByteArray frame = wireFrame;
     if (isTcpMode()) {
         if (wireFrame.size() < 8 || readU16(wireFrame, 2) != 0
@@ -1481,6 +2114,7 @@ void MainWindow::processWireFrame(const QByteArray &wireFrame)
             appendLog(QStringLiteral("ERR"), wireFrame,
                       QStringLiteral("Modbus TCP MBAP 头无效"), true);
             setStatus(QStringLiteral("收到无效的 Modbus TCP 报文"), true);
+            finishReceiveFailure();
             return;
         }
         const quint16 transaction = readU16(wireFrame, 0);
@@ -1488,6 +2122,7 @@ void MainWindow::processWireFrame(const QByteArray &wireFrame)
             appendLog(QStringLiteral("ERR"), wireFrame,
                       QStringLiteral("TCP 事务标识不匹配"), true);
             setStatus(QStringLiteral("TCP 事务标识不匹配"), true);
+            finishReceiveFailure();
             return;
         }
         m_currentTransactionId = transaction;
@@ -1499,6 +2134,7 @@ void MainWindow::processWireFrame(const QByteArray &wireFrame)
             appendLog(QStringLiteral("ERR"), wireFrame,
                       QStringLiteral("Modbus ASCII 格式或 LRC 校验失败"), true);
             setStatus(QStringLiteral("ASCII 报文格式或 LRC 校验失败"), true);
+            finishReceiveFailure();
             return;
         }
         frame = appendCrc(payload);
@@ -1516,6 +2152,7 @@ void MainWindow::processWireFrame(const QByteArray &wireFrame)
         setStatus(QStringLiteral("%1过短（%2 字节）")
                       .arg(isSlaveMode() ? QStringLiteral("请求") : QStringLiteral("响应"))
                       .arg(frame.size()), true);
+        finishReceiveFailure();
         return;
     }
     if (!hasValidCrc(frame)) {
@@ -1523,6 +2160,7 @@ void MainWindow::processWireFrame(const QByteArray &wireFrame)
                       .arg(isSlaveMode() ? QStringLiteral("请求") : QStringLiteral("响应"))
                       + QStringLiteral("，请检查串口参数和线路"), true);
         appendLog(QStringLiteral("ERR"), {}, QStringLiteral("CRC 校验失败"), true);
+        finishReceiveFailure();
         return;
     }
 
@@ -1532,12 +2170,13 @@ void MainWindow::processWireFrame(const QByteArray &wireFrame)
     }
     if (m_rawRequest) {
         setStatus(QStringLiteral("收到有效响应，共 %1 字节").arg(frame.size()));
+        recordCommunicationResult(true);
         return;
     }
-    parseResponse(frame);
+    recordCommunicationResult(parseResponse(frame));
 }
 
-void MainWindow::parseResponse(const QByteArray &frame)
+bool MainWindow::parseResponse(const QByteArray &frame)
 {
     const quint8 slave = static_cast<quint8>(frame.at(0));
     const quint8 function = static_cast<quint8>(frame.at(1));
@@ -1547,7 +2186,7 @@ void MainWindow::parseResponse(const QByteArray &frame)
     if (slave != expectedSlave) {
         setStatus(QStringLiteral("响应从站地址不匹配：期望 %1，收到 %2")
                       .arg(expectedSlave).arg(slave), true);
-        return;
+        return false;
     }
     if (function & 0x80) {
         const quint8 code = static_cast<quint8>(frame.at(2));
@@ -1555,13 +2194,13 @@ void MainWindow::parseResponse(const QByteArray &frame)
                                     .arg(code).arg(exceptionText(code));
         setStatus(message, true);
         appendLog(QStringLiteral("ERR"), {}, message, true);
-        return;
+        return false;
     }
     if (function != expectedFunction) {
         setStatus(QStringLiteral("响应功能码不匹配：期望 0x%1，收到 0x%2")
                       .arg(expectedFunction, 2, 16, QLatin1Char('0'))
                       .arg(function, 2, 16, QLatin1Char('0')).toUpper(), true);
-        return;
+        return false;
     }
 
     m_resultTable->setRowCount(0);
@@ -1583,7 +2222,7 @@ void MainWindow::parseResponse(const QByteArray &frame)
         const int byteCount = static_cast<quint8>(frame.at(2));
         if (frame.size() != byteCount + 5) {
             setStatus(QStringLiteral("响应长度与字节计数不一致"), true);
-            return;
+            return false;
         }
         const int requested = readU16(m_lastRequest, 4);
         for (int index = 0; index < requested; ++index) {
@@ -1605,7 +2244,7 @@ void MainWindow::parseResponse(const QByteArray &frame)
         const int byteCount = static_cast<quint8>(frame.at(2));
         if ((byteCount % 2) != 0 || frame.size() != byteCount + 5) {
             setStatus(QStringLiteral("寄存器响应长度不正确"), true);
-            return;
+            return false;
         }
         const int registerCount = byteCount / 2;
         for (int index = 0; index < registerCount; ++index) {
@@ -1625,7 +2264,7 @@ void MainWindow::parseResponse(const QByteArray &frame)
     } else if (function == 0x05 || function == 0x06) {
         if (frame.size() != 8 || frame.left(6) != m_lastRequest.left(6)) {
             setStatus(QStringLiteral("写入响应与请求内容不一致"), true);
-            return;
+            return false;
         }
         const quint16 value = readU16(frame, 4);
         m_resultTable->insertRow(0);
@@ -1640,13 +2279,13 @@ void MainWindow::parseResponse(const QByteArray &frame)
     } else if (function == 0x0F || function == 0x10) {
         if (frame.size() != 8) {
             setStatus(QStringLiteral("写多个数据的响应长度不正确"), true);
-            return;
+            return false;
         }
         const quint16 responseAddress = readU16(frame, 2);
         const quint16 responseQuantity = readU16(frame, 4);
         if (responseAddress != baseAddress || responseQuantity != readU16(m_lastRequest, 4)) {
             setStatus(QStringLiteral("写入响应的地址或数量不匹配"), true);
-            return;
+            return false;
         }
         m_resultTable->insertRow(0);
         auto *addressItem = new QTableWidgetItem(formatPlcAddress(responseAddress));
@@ -1657,7 +2296,10 @@ void MainWindow::parseResponse(const QByteArray &frame)
         m_resultTable->setItem(0, 3, new QTableWidgetItem(QStringLiteral("批量写入成功")));
         setStatus(QStringLiteral("批量写入成功：%1 项").arg(responseQuantity));
     }
+    if (function == 0x01 || function == 0x02 || function == 0x03 || function == 0x04)
+        appendTrendSample();
     refreshResultPanel();
+    return true;
 }
 
 void MainWindow::handleSlaveRequest(const QByteArray &frame)
@@ -1673,14 +2315,16 @@ void MainWindow::handleSlaveRequest(const QByteArray &frame)
     }
 
     auto sendException = [&](quint8 code) {
-        if (broadcast)
+        if (broadcast) {
+            recordCommunicationResult(false);
             return;
+        }
         QByteArray response;
         response.append(static_cast<char>(configuredUnit));
         response.append(static_cast<char>(function | 0x80));
         response.append(static_cast<char>(code));
         sendSlaveResponse(appendCrc(response),
-                          QStringLiteral("异常响应：%1").arg(exceptionText(code)));
+                          QStringLiteral("异常响应：%1").arg(exceptionText(code)), false);
     };
     auto validRange = [](quint16 address, quint16 quantity) {
         return static_cast<quint32>(address) + quantity <= 65536u;
@@ -1769,6 +2413,7 @@ void MainWindow::handleSlaveRequest(const QByteArray &frame)
                               QStringLiteral("单个数据写入，地址 %1").arg(address));
         } else {
             setStatus(QStringLiteral("已执行广播写入，地址 %1").arg(address));
+            recordCommunicationResult(true);
         }
         return;
     }
@@ -1815,6 +2460,7 @@ void MainWindow::handleSlaveRequest(const QByteArray &frame)
         } else {
             setStatus(QStringLiteral("已执行广播批量写入，地址 %1，数量 %2")
                           .arg(address).arg(quantity));
+            recordCommunicationResult(true);
         }
         return;
     }
@@ -1822,18 +2468,31 @@ void MainWindow::handleSlaveRequest(const QByteArray &frame)
     sendException(0x01);
 }
 
-void MainWindow::sendSlaveResponse(const QByteArray &frame, const QString &description)
+void MainWindow::sendSlaveResponse(const QByteArray &frame, const QString &description,
+                                   bool successfulTransaction)
 {
-    if (!isTransportOpen())
+    if (!isTransportOpen()) {
+        recordCommunicationResult(false);
         return;
+    }
 
     QByteArray wireFrame = frame;
     qint64 written = -1;
     QString error;
-    if (isTcpMode()) {
-        if (!m_slaveTcpClient
-            || m_slaveTcpClient->state() != QAbstractSocket::ConnectedState)
+    if (isInternalChannelMode()) {
+        if (!m_internalSlaveClient
+            || m_internalSlaveClient->state() != QAbstractSocket::ConnectedState) {
+            recordCommunicationResult(false);
             return;
+        }
+        written = m_internalSlaveClient->write(wireFrame);
+        error = m_internalSlaveClient->errorString();
+    } else if (isTcpMode()) {
+        if (!m_slaveTcpClient
+            || m_slaveTcpClient->state() != QAbstractSocket::ConnectedState) {
+            recordCommunicationResult(false);
+            return;
+        }
         wireFrame = encodeTcp(frame.left(frame.size() - 2), m_currentTransactionId);
         written = m_slaveTcpClient->write(wireFrame);
         error = m_slaveTcpClient->errorString();
@@ -1845,16 +2504,36 @@ void MainWindow::sendSlaveResponse(const QByteArray &frame, const QString &descr
     }
     if (written != wireFrame.size()) {
         setStatus(QStringLiteral("从站响应发送失败：%1").arg(error), true);
+        recordCommunicationResult(false);
         return;
     }
     ++m_txCount;
     m_counterLabel->setText(QStringLiteral("TX %1  ·  RX %2").arg(m_txCount).arg(m_rxCount));
     appendLog(QStringLiteral("TX"), wireFrame, description);
     setStatus(description);
+    recordCommunicationResult(successfulTransaction);
+}
+
+void MainWindow::closeInternalChannel()
+{
+    m_pollCheck->setChecked(false);
+    m_responseTimer->stop();
+    m_frameGapTimer->stop();
+    m_waitingForResponse = false;
+    m_receiveBuffer.clear();
+    if (m_internalSlaveClient) {
+        m_internalSlaveClient->disconnect(this);
+        m_internalSlaveClient->abort();
+        m_internalSlaveClient->deleteLater();
+        m_internalSlaveClient = nullptr;
+    }
+    m_internalSocket->abort();
+    m_internalServer->close();
 }
 
 void MainWindow::handleResponseTimeout()
 {
+    const bool transactionPending = m_waitingForResponse;
     m_waitingForResponse = false;
     m_receiveBuffer.clear();
     m_tcpReceiveBuffer.clear();
@@ -1863,6 +2542,8 @@ void MainWindow::handleResponseTimeout()
         "响应超时（%1 ms），请检查从站地址、线路和通讯参数").arg(m_timeoutSpin->value());
     setStatus(message, true);
     appendLog(QStringLiteral("ERR"), {}, message, true);
+    if (transactionPending)
+        recordCommunicationResult(false);
 }
 
 void MainWindow::handleSerialError()
@@ -1892,8 +2573,9 @@ void MainWindow::togglePolling(bool enabled)
         }
         if (!isTransportOpen()) {
             m_pollCheck->setChecked(false);
-            setStatus(isTcpMode() ? QStringLiteral("请先建立 TCP 连接")
-                                  : QStringLiteral("请先打开串口"), true);
+            setStatus(isInternalChannelMode() ? QStringLiteral("请先加入内部通道")
+                      : isTcpMode() ? QStringLiteral("请先建立 TCP 连接")
+                                    : QStringLiteral("请先打开串口"), true);
             return;
         }
         m_pollTimer->start(m_pollIntervalSpin->value());
@@ -1939,6 +2621,23 @@ void MainWindow::clearLog()
     m_txCount = 0;
     m_rxCount = 0;
     m_counterLabel->setText(QStringLiteral("TX 0  ·  RX 0"));
+    m_communicationStatistics.reset();
+    updateCommunicationStatistics();
+}
+
+void MainWindow::recordCommunicationResult(bool success)
+{
+    if (success)
+        m_communicationStatistics.recordSuccess();
+    else
+        m_communicationStatistics.recordFailure();
+    updateCommunicationStatistics();
+}
+
+void MainWindow::updateCommunicationStatistics()
+{
+    if (m_statisticsLabel)
+        m_statisticsLabel->setText(m_communicationStatistics.displayText());
 }
 
 void MainWindow::saveLog()
@@ -2146,6 +2845,17 @@ void MainWindow::loadSettings()
     m_hostEdit->setText(settings.value(QStringLiteral("tcp/host"),
                                        QStringLiteral("127.0.0.1")).toString());
     m_tcpPortSpin->setValue(settings.value(QStringLiteral("tcp/port"), 502).toInt());
+    m_channelNameEdit->setText(
+        settings.value(QStringLiteral("internal/channelName"),
+                       QStringLiteral("默认通道")).toString());
+    m_simulationModeCombo->setProperty(
+        "savedMode", settings.value(QStringLiteral("simulation/mode"), 0));
+    m_simulationStepSpin->setValue(
+        settings.value(QStringLiteral("simulation/step"), 1).toInt());
+    m_simulationProbabilitySpin->setValue(
+        settings.value(QStringLiteral("simulation/probability"), 50).toInt());
+    setComboByData(m_simulationDirectionCombo,
+                   settings.value(QStringLiteral("simulation/direction"), false));
     m_slaveSpin->setValue(settings.value(QStringLiteral("request/slave"), 1).toInt());
     m_slaveUnitSpin->setValue(settings.value(QStringLiteral("slave/unit"), 1).toInt());
     m_slaveViewStartSpin->setValue(settings.value(QStringLiteral("slave/viewStart"), 0).toInt());
@@ -2156,6 +2866,8 @@ void MainWindow::loadSettings()
     setComboByData(m_functionCombo, settings.value(QStringLiteral("request/function"), 3));
     m_timeoutSpin->setValue(settings.value(QStringLiteral("timing/timeout"), 1000).toInt());
     m_pollIntervalSpin->setValue(settings.value(QStringLiteral("timing/pollInterval"), 1000).toInt());
+    m_trendPointLimitSpin->setValue(
+        settings.value(QStringLiteral("appearance/trendPointLimit"), 120).toInt());
 }
 
 void MainWindow::saveSettings()
@@ -2174,6 +2886,16 @@ void MainWindow::saveSettings()
     settings.setValue(QStringLiteral("serial/flow"), m_flowControlCombo->currentData());
     settings.setValue(QStringLiteral("tcp/host"), m_hostEdit->text().trimmed());
     settings.setValue(QStringLiteral("tcp/port"), m_tcpPortSpin->value());
+    settings.setValue(QStringLiteral("internal/channelName"),
+                      m_channelNameEdit->text().trimmed());
+    settings.setValue(QStringLiteral("simulation/mode"),
+                      m_simulationModeCombo->currentData());
+    settings.setValue(QStringLiteral("simulation/step"),
+                      m_simulationStepSpin->value());
+    settings.setValue(QStringLiteral("simulation/probability"),
+                      m_simulationProbabilitySpin->value());
+    settings.setValue(QStringLiteral("simulation/direction"),
+                      m_simulationDirectionCombo->currentData());
     settings.setValue(QStringLiteral("request/slave"), m_slaveSpin->value());
     settings.setValue(QStringLiteral("slave/unit"), m_slaveUnitSpin->value());
     settings.setValue(QStringLiteral("slave/viewStart"), m_slaveViewStartSpin->value());
@@ -2184,4 +2906,6 @@ void MainWindow::saveSettings()
     settings.setValue(QStringLiteral("request/quantity"), m_quantitySpin->value());
     settings.setValue(QStringLiteral("timing/timeout"), m_timeoutSpin->value());
     settings.setValue(QStringLiteral("timing/pollInterval"), m_pollIntervalSpin->value());
+    settings.setValue(QStringLiteral("appearance/trendPointLimit"),
+                      m_trendPointLimitSpin->value());
 }

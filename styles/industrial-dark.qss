@@ -43,7 +43,8 @@ QLabel#connectionBadge[connected="true"] {
 }
 
 QLabel#statusText,
-QLabel#counterText {
+QLabel#counterText,
+QLabel#statisticsText {
     color: #C8D1D7;
 }
 
@@ -158,6 +159,25 @@ QPushButton:disabled {
     color: #77858E;
     background: #242C31;
     border-color: #3C484F;
+}
+
+QMenu {
+    color: #EDF2F5;
+    background: #151C21;
+    border-color: #53636E;
+}
+
+QMenu::item {
+    background: transparent;
+}
+
+QMenu::item:selected {
+    color: #11171B;
+    background: #E3AA5B;
+}
+
+QMenu::separator {
+    background: #36434B;
 }
 
 QPushButton#headerButton {
@@ -311,6 +331,17 @@ QLabel#resultEmptyState {
     color: #82919A;
 }
 
+QLabel#curveSummary {
+    color: #AEBBC4;
+    padding-left: 10px;
+}
+
+TrendChartWidget#trendChart {
+    background: #11171B;
+    border: 1px solid #53636E;
+    border-radius: 3px;
+}
+
 QPlainTextEdit {
     color: #E7EDF0;
     background: #11171B;
@@ -320,9 +351,9 @@ QPlainTextEdit {
 }
 
 QPlainTextEdit#logConsole {
-    color: #DCE5EA;
-    background: #0B0F12;
-    border-color: #46545E;
+    color: #E7EDF0;
+    background: #11171B;
+    border-color: #53636E;
 }
 
 QCheckBox {
@@ -346,6 +377,22 @@ QCheckBox::indicator:checked {
 QGroupBox#timingBox {
     background: #20292F;
     border-color: #4D5C66;
+}
+
+QScrollArea#slaveControlScroll,
+QWidget#slaveControlContent {
+    background: transparent;
+    border: none;
+}
+
+QGroupBox#simulationGroup {
+    background: #20292F;
+    border-color: #4D5C66;
+}
+
+QGroupBox#simulationGroup::title {
+    color: #DCE4E8;
+    background: #20292F;
 }
 
 QGroupBox#timingBox::title {

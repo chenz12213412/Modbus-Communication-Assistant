@@ -1,5 +1,7 @@
 #pragma once
 
+#include "communicationstatistics.h"
+
 #include <QByteArray>
 #include <QList>
 #include <QMainWindow>
@@ -10,7 +12,9 @@ class QCheckBox;
 class QCloseEvent;
 class QComboBox;
 class QEvent;
+class QFormLayout;
 class QGridLayout;
+class QGroupBox;
 class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
@@ -20,10 +24,13 @@ class QScrollArea;
 class QSpinBox;
 class QStackedWidget;
 class QTableWidget;
+class QTabWidget;
 class QTimer;
 class QTcpServer;
 class QTcpSocket;
 QT_END_NAMESPACE
+
+class TrendChartWidget;
 
 class MainWindow final : public QMainWindow
 {
@@ -45,6 +52,8 @@ private slots:
     void readSerialData();
     void readTcpData();
     void acceptTcpClient();
+    void readInternalChannelData();
+    void acceptInternalChannelClient();
     void processReceivedFrame();
     void handleResponseTimeout();
     void handleSerialError();
@@ -59,11 +68,19 @@ private slots:
     void toggleTheme();
     void launchNewInstance();
     void updateResultViewMode();
+    void updateSimulationUi();
+    void toggleSimulation(bool enabled);
+    void generateSimulationData();
+    void resetSimulationPhase();
+    void restoreSimulationData();
 
 private:
     void buildUi();
     void applyStyle();
     void refreshResultPanel();
+    void appendTrendSample();
+    void clearTrendData();
+    void updateTrendSummary(const QString &message = QString());
     void clearResultPanel();
     int resultPanelColumnCount() const;
     QString formatPlcAddress(int protocolAddress) const;
@@ -72,17 +89,24 @@ private:
     void saveSettings();
     void setConnectedState(bool connected);
     void setBusyState(bool busy);
+    void closeInternalChannel();
+    void stopSimulation(const QString &message = QString());
+    bool isAddressSimulated(int area, int address) const;
     void writeFrame(const QByteArray &frame, const QString &description);
     void processWireFrame(const QByteArray &wireFrame);
-    void parseResponse(const QByteArray &frame);
+    bool parseResponse(const QByteArray &frame);
     void handleSlaveRequest(const QByteArray &frame);
-    void sendSlaveResponse(const QByteArray &frame, const QString &description);
+    void sendSlaveResponse(const QByteArray &frame, const QString &description,
+                           bool successfulTransaction = true);
     void appendLog(const QString &direction, const QByteArray &data,
                    const QString &message = QString(), bool isError = false);
+    void recordCommunicationResult(bool success);
+    void updateCommunicationStatistics();
     void setStatus(const QString &text, bool error = false);
     bool isSlaveMode() const;
     bool isTcpMode() const;
     bool isAsciiMode() const;
+    bool isInternalChannelMode() const;
     bool isTransportOpen() const;
 
     QByteArray buildRequest(QString *errorMessage) const;
@@ -102,9 +126,13 @@ private:
     QTcpSocket *m_tcpSocket = nullptr;
     QTcpServer *m_tcpServer = nullptr;
     QTcpSocket *m_slaveTcpClient = nullptr;
+    QTcpSocket *m_internalSocket = nullptr;
+    QTcpServer *m_internalServer = nullptr;
+    QTcpSocket *m_internalSlaveClient = nullptr;
     QTimer *m_responseTimer = nullptr;
     QTimer *m_frameGapTimer = nullptr;
     QTimer *m_pollTimer = nullptr;
+    QTimer *m_simulationTimer = nullptr;
     QByteArray m_receiveBuffer;
     QByteArray m_tcpReceiveBuffer;
     QByteArray m_lastRequest;
@@ -112,6 +140,7 @@ private:
     bool m_rawRequest = false;
     quint64 m_txCount = 0;
     quint64 m_rxCount = 0;
+    CommunicationStatistics m_communicationStatistics;
     quint16 m_transactionId = 0;
     quint16 m_pendingTransactionId = 0;
     quint16 m_currentTransactionId = 0;
@@ -119,6 +148,11 @@ private:
     bool m_resultIsBitData = false;
     int m_resultAddressArea = -1;
     int m_resultPanelColumns = 0;
+    quint64 m_simulationTick = 0;
+    int m_simulationArea = -1;
+    int m_simulationBackupStart = 0;
+    QVector<quint16> m_simulationBackup;
+    QVector<quint16> m_simulationPreviousValues;
     QVector<quint8> m_coils;
     QVector<quint8> m_discreteInputs;
     QVector<quint16> m_holdingRegisters;
@@ -139,8 +173,10 @@ private:
     QLabel *m_connectionBadge = nullptr;
     QLineEdit *m_hostEdit = nullptr;
     QSpinBox *m_tcpPortSpin = nullptr;
+    QLineEdit *m_channelNameEdit = nullptr;
     QList<QWidget *> m_serialFieldContainers;
     QList<QWidget *> m_tcpFieldContainers;
+    QList<QWidget *> m_internalFieldContainers;
 
     QSpinBox *m_slaveSpin = nullptr;
     QSpinBox *m_slaveUnitSpin = nullptr;
@@ -156,23 +192,40 @@ private:
     QStackedWidget *m_controlStack = nullptr;
     QWidget *m_masterControls = nullptr;
     QWidget *m_slaveControls = nullptr;
+    QWidget *m_slavePage = nullptr;
     QLabel *m_requestTitle = nullptr;
 
     QComboBox *m_slaveAreaCombo = nullptr;
     QSpinBox *m_slaveViewStartSpin = nullptr;
     QSpinBox *m_slaveViewCountSpin = nullptr;
     QPushButton *m_slaveRefreshButton = nullptr;
+    QGroupBox *m_simulationGroup = nullptr;
+    QCheckBox *m_simulationEnabledCheck = nullptr;
+    QComboBox *m_simulationModeCombo = nullptr;
+    QSpinBox *m_simulationStepSpin = nullptr;
+    QSpinBox *m_simulationProbabilitySpin = nullptr;
+    QComboBox *m_simulationDirectionCombo = nullptr;
+    QFormLayout *m_simulationParameterForm = nullptr;
+    QPushButton *m_simulationResetButton = nullptr;
+    QPushButton *m_simulationRestoreButton = nullptr;
 
     QTableWidget *m_resultTable = nullptr;
+    QTabWidget *m_tabs = nullptr;
+    QLabel *m_resultTitleLabel = nullptr;
     QComboBox *m_resultViewCombo = nullptr;
     QStackedWidget *m_resultViewStack = nullptr;
     QScrollArea *m_resultPanelScroll = nullptr;
     QWidget *m_resultPanelContent = nullptr;
     QGridLayout *m_resultPanelLayout = nullptr;
+    TrendChartWidget *m_trendChart = nullptr;
+    QLabel *m_trendSummaryLabel = nullptr;
+    QCheckBox *m_trendPauseCheck = nullptr;
+    QSpinBox *m_trendPointLimitSpin = nullptr;
     QPlainTextEdit *m_logEdit = nullptr;
     QLineEdit *m_rawEdit = nullptr;
     QCheckBox *m_autoCrcCheck = nullptr;
     QPushButton *m_rawSendButton = nullptr;
     QLabel *m_statusLabel = nullptr;
     QLabel *m_counterLabel = nullptr;
+    QLabel *m_statisticsLabel = nullptr;
 };

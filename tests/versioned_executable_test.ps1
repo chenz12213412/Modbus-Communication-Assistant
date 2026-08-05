@@ -3,7 +3,9 @@ param(
     [string]$Executable,
 
     [Parameter(Mandatory = $true)]
-    [string]$ExpectedVersion
+    [string]$ExpectedVersion,
+
+    [string]$ExpectedFileName = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -13,6 +15,10 @@ $versionInfo = (Get-Item -LiteralPath $resolvedExecutable).VersionInfo
 $expectedWindowsVersion = "$ExpectedVersion.0"
 
 $failures = @()
+if (![string]::IsNullOrWhiteSpace($ExpectedFileName) -and
+    [System.IO.Path]::GetFileName($resolvedExecutable) -ne $ExpectedFileName) {
+    $failures += "File name expected '$ExpectedFileName', actual '$([System.IO.Path]::GetFileName($resolvedExecutable))'"
+}
 if (!([string]$versionInfo.FileVersion).StartsWith(
         $expectedWindowsVersion, [System.StringComparison]::Ordinal)) {
     $failures += "FileVersion expected $expectedWindowsVersion, actual '$($versionInfo.FileVersion)'"

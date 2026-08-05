@@ -36,6 +36,10 @@ $applicationArchive = Join-Path $stagingRoot 'application.7z'
 $sfxConfiguration = Join-Path $stagingRoot 'sfx-config.txt'
 $stagingIcon = Join-Path $stagingRoot 'app-icon.ico'
 $brandedSfxModule = Join-Path $stagingRoot '7zS2-modbus.sfx'
+$versionResourceScript = Join-Path $stagingRoot 'app-version.rc'
+$compiledVersionResource = Join-Path $stagingRoot 'app-version.res'
+$unversionedSfxModule = Join-Path $stagingRoot '7zS2-modbus-no-version.sfx'
+$versionedSfxModule = Join-Path $stagingRoot '7zS2-modbus-versioned.sfx'
 $temporaryOutput = Join-Path $stagingRoot 'ModbusSerialAssistant_OneFile.exe'
 
 foreach ($requiredFile in @($buildExecutable, $windeployqt, $applicationIcon)) {
@@ -140,9 +144,80 @@ if ($resourceHackerProcess.ExitCode -ne 0 -or
     throw 'Failed to apply the application icon to the one-file launcher.'
 }
 
+$extractVersionArguments = @(
+    '-open', $buildExecutable,
+    '-save', $versionResourceScript,
+    '-action', 'extract',
+    '-mask', 'VERSIONINFO,,',
+    '-log', 'NUL'
+)
+$extractVersionProcess = Start-Process `
+    -FilePath $resourceHacker `
+    -ArgumentList $extractVersionArguments `
+    -Wait -PassThru -WindowStyle Hidden
+if ($extractVersionProcess.ExitCode -ne 0 -or
+    !(Test-Path -LiteralPath $versionResourceScript -PathType Leaf)) {
+    throw 'Failed to extract version metadata from the application.'
+}
+
+$compileVersionArguments = @(
+    '-open', $versionResourceScript,
+    '-save', $compiledVersionResource,
+    '-action', 'compile',
+    '-log', 'NUL'
+)
+$compileVersionProcess = Start-Process `
+    -FilePath $resourceHacker `
+    -ArgumentList $compileVersionArguments `
+    -Wait -PassThru -WindowStyle Hidden
+if ($compileVersionProcess.ExitCode -ne 0 -or
+    !(Test-Path -LiteralPath $compiledVersionResource -PathType Leaf)) {
+    throw 'Failed to compile the application version metadata.'
+}
+
+$deleteVersionArguments = @(
+    '-open', $brandedSfxModule,
+    '-save', $unversionedSfxModule,
+    '-action', 'delete',
+    '-mask', 'VERSIONINFO,,',
+    '-log', 'NUL'
+)
+$deleteVersionProcess = Start-Process `
+    -FilePath $resourceHacker `
+    -ArgumentList $deleteVersionArguments `
+    -Wait -PassThru -WindowStyle Hidden
+if ($deleteVersionProcess.ExitCode -ne 0 -or
+    !(Test-Path -LiteralPath $unversionedSfxModule -PathType Leaf)) {
+    throw 'Failed to remove the original SFX version metadata.'
+}
+
+$importVersionArguments = @(
+    '-open', $unversionedSfxModule,
+    '-save', $versionedSfxModule,
+    '-action', 'addoverwrite',
+    '-resource', $compiledVersionResource,
+    '-mask', 'VERSIONINFO,,,',
+    '-log', 'NUL'
+)
+$importVersionProcess = Start-Process `
+    -FilePath $resourceHacker `
+    -ArgumentList $importVersionArguments `
+    -Wait -PassThru -WindowStyle Hidden
+if ($importVersionProcess.ExitCode -ne 0 -or
+    !(Test-Path -LiteralPath $versionedSfxModule -PathType Leaf)) {
+    throw 'Failed to apply version metadata to the one-file launcher.'
+}
+
+$applicationVersion = (Get-Item -LiteralPath $buildExecutable).VersionInfo.FileVersion
+$launcherVersion = (Get-Item -LiteralPath $versionedSfxModule).VersionInfo.FileVersion
+if ([string]::IsNullOrWhiteSpace($applicationVersion) -or
+    $launcherVersion -ne $applicationVersion) {
+    throw "One-file launcher version mismatch: expected '$applicationVersion', actual '$launcherVersion'."
+}
+
 $outputStream = [System.IO.File]::Create($temporaryOutput)
 try {
-    foreach ($part in @($brandedSfxModule, $sfxConfiguration, $applicationArchive)) {
+    foreach ($part in @($versionedSfxModule, $sfxConfiguration, $applicationArchive)) {
         $inputStream = [System.IO.File]::OpenRead($part)
         try {
             $inputStream.CopyTo($outputStream)

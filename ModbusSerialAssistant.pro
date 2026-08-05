@@ -3,7 +3,7 @@ QT += core gui widgets serialport network
 CONFIG += c++17
 TEMPLATE = app
 TARGET = ModbusSerialAssistant
-VERSION = 1.0.4
+VERSION = 1.0.5
 
 SOURCES += \
     main.cpp \

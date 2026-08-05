@@ -570,3 +570,20 @@ QToolTip {
     background: #26333D;
     border: 1px solid #52616C;
 }
+
+QMessageBox {
+    color: #17212B;
+    background: #F7F9FA;
+}
+
+QMessageBox QLabel {
+    color: #17212B;
+    background: transparent;
+}
+
+QMessageBox QPushButton {
+    min-width: 72px;
+    color: #FFFFFF;
+    background: #354550;
+    border-color: #26343E;
+}

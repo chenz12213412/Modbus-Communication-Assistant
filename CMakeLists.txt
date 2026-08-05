@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(ModbusSerialAssistant VERSION 1.0.5 LANGUAGES CXX)
+project(ModbusSerialAssistant VERSION 1.0.7 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -10,6 +10,12 @@ set(CMAKE_AUTORCC ON)
 
 find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets SerialPort Network)
 find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets SerialPort Network)
+
+set(APP_VERSION_RESOURCE)
+if(WIN32)
+    configure_file(app_version.rc.in app_version.rc @ONLY)
+    set(APP_VERSION_RESOURCE ${CMAKE_CURRENT_BINARY_DIR}/app_version.rc)
+endif()
 
 add_executable(ModbusSerialAssistant WIN32
     main.cpp
@@ -24,7 +30,7 @@ add_executable(ModbusSerialAssistant WIN32
     trendchart.cpp
     trendchart.h
     resources.qrc
-    app_icon.rc
+    ${APP_VERSION_RESOURCE}
 )
 
 include(CTest)

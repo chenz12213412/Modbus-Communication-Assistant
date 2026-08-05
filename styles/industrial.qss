@@ -6,6 +6,10 @@ QWidget#appRoot {
     color: #17212B;
 }
 
+QWidget#resultPage {
+    background: #EEF1F3;
+}
+
 QWidget {
     color: #17212B;
     font-size: 13px;

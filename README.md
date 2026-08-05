@@ -2,7 +2,7 @@
 
 一个使用 Qt Widgets 编写的 Modbus RTU、ASCII、TCP 与内部虚拟通道主站/从站调试工具。
 
-完整的安装、使用、构建和发布说明请查看：[项目文档.md](项目文档.md)。
+完整的安装、使用、构建和发布说明请查看：[PROJECT_DOCUMENTATION.md](PROJECT_DOCUMENTATION.md)。
 
 ## 功能
 

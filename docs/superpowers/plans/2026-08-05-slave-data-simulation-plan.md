@@ -52,7 +52,7 @@
 
 **Files:**
 - Modify: `README.md`
-- Modify: `项目文档.md`
+- Modify: `PROJECT_DOCUMENTATION.md`
 
 - [x] 补充模式、参数和手动/通讯写入规则。
 - [x] 构建 Release 并运行全部测试。

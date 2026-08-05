@@ -78,7 +78,7 @@
 
 **Files:**
 - Modify: `README.md`
-- Modify: `项目文档.md`
+- Modify: `PROJECT_DOCUMENTATION.md`
 - Modify: `docs/superpowers/plans/2026-08-05-slave-data-simulation-plan.md`
 
 - [x] **Step 1: 更新使用说明**

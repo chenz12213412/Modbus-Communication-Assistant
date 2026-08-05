@@ -46,7 +46,7 @@
 
 **Files:**
 - Modify: `README.md`
-- Modify: `项目文档.md`
+- Modify: `PROJECT_DOCUMENTATION.md`
 - Modify: `CMakeLists.txt`
 - Modify: `ModbusSerialAssistant.pro`
 

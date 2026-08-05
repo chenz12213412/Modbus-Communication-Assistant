@@ -322,7 +322,7 @@ Modbus串口助手/
 ├─ trendchart.cpp                 趋势曲线绘制和采样历史
 ├─ resources.qrc                  Qt 资源清单
 ├─ README.md                      项目简介
-└─ 项目文档.md                    完整项目文档
+└─ PROJECT_DOCUMENTATION.md       完整项目文档
 ```
 
 构建产物通常位于 `build/` 和 `dist/`，这两个目录已被 Git 忽略。

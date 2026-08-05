@@ -6,6 +6,10 @@ QWidget#appRoot {
     background: #151B20;
 }
 
+QWidget#resultPage {
+    background: #151C21;
+}
+
 QWidget {
     color: #E5EBEF;
 }

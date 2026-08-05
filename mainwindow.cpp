@@ -10,6 +10,7 @@
 #include <QColor>
 #include <QComboBox>
 #include <QDateTime>
+#include <QDesktopServices>
 #include <QDir>
 #include <QEvent>
 #include <QFile>
@@ -27,6 +28,12 @@
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QProcess>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QAbstractSpinBox>
 #include <QPushButton>
 #include <QRegularExpression>
@@ -50,6 +57,7 @@
 #include <QTextCursor>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <QVersionNumber>
 
 namespace {
 constexpr int kDefaultTimeoutMs = 1000;
@@ -219,6 +227,7 @@ MainWindow::MainWindow(QWidget *parent)
     updateModeUi();
     setConnectedState(false);
     setStatus(QStringLiteral("就绪，请选择串口并打开"));
+    QTimer::singleShot(1200, this, &MainWindow::checkForUpdates);
 }
 
 MainWindow::~MainWindow()
@@ -264,7 +273,9 @@ void MainWindow::buildUi()
     titles->setSpacing(1);
     auto *title = new QLabel(QStringLiteral("Modbus 通讯助手"));
     title->setObjectName(QStringLiteral("title"));
-    auto *subtitle = new QLabel(QStringLiteral("RTU · ASCII · TCP · 主站/从站"));
+    auto *subtitle = new QLabel(
+        QStringLiteral("RTU · ASCII · TCP · 主站/从站 · v%1")
+            .arg(QApplication::applicationVersion()));
     subtitle->setObjectName(QStringLiteral("subtitle"));
     titles->addWidget(title);
     titles->addWidget(subtitle);
@@ -523,7 +534,6 @@ void MainWindow::buildUi()
     m_simulationGroup = new QGroupBox(QStringLiteral("自动数据"));
     m_simulationGroup->setObjectName(QStringLiteral("simulationGroup"));
     m_simulationGroup->setMinimumWidth(0);
-    m_simulationGroup->setMaximumWidth(900);
     m_simulationGroup->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     auto *simulationLayout = new QHBoxLayout(m_simulationGroup);
     simulationLayout->setContentsMargins(12, 14, 12, 10);
@@ -535,8 +545,8 @@ void MainWindow::buildUi()
     simulationCommonForm->setHorizontalSpacing(10);
     simulationCommonForm->setVerticalSpacing(6);
     m_simulationModeCombo = new QComboBox;
-    m_simulationModeCombo->setMinimumWidth(170);
-    m_simulationModeCombo->setMaximumWidth(210);
+    m_simulationModeCombo->setMinimumWidth(150);
+    m_simulationModeCombo->setMaximumWidth(180);
     simulationCommonForm->addRow(QStringLiteral("模式"), m_simulationModeCombo);
     simulationLayout->addLayout(simulationCommonForm);
 
@@ -546,19 +556,19 @@ void MainWindow::buildUi()
     m_simulationStepSpin = new QSpinBox;
     m_simulationStepSpin->setRange(1, 65535);
     m_simulationStepSpin->setValue(1);
-    m_simulationStepSpin->setMinimumWidth(120);
-    m_simulationStepSpin->setMaximumWidth(140);
+    m_simulationStepSpin->setMinimumWidth(100);
+    m_simulationStepSpin->setMaximumWidth(120);
     m_simulationProbabilitySpin = new QSpinBox;
     m_simulationProbabilitySpin->setRange(0, 100);
     m_simulationProbabilitySpin->setValue(50);
     m_simulationProbabilitySpin->setSuffix(QStringLiteral(" %"));
-    m_simulationProbabilitySpin->setMinimumWidth(120);
-    m_simulationProbabilitySpin->setMaximumWidth(140);
+    m_simulationProbabilitySpin->setMinimumWidth(100);
+    m_simulationProbabilitySpin->setMaximumWidth(120);
     m_simulationDirectionCombo = new QComboBox;
     m_simulationDirectionCombo->addItem(QStringLiteral("正向"), false);
     m_simulationDirectionCombo->addItem(QStringLiteral("反向"), true);
-    m_simulationDirectionCombo->setMinimumWidth(120);
-    m_simulationDirectionCombo->setMaximumWidth(140);
+    m_simulationDirectionCombo->setMinimumWidth(100);
+    m_simulationDirectionCombo->setMaximumWidth(120);
     m_simulationParameterForm->addRow(QStringLiteral("递增步长"), m_simulationStepSpin);
     m_simulationParameterForm->addRow(QStringLiteral("接通概率"), m_simulationProbabilitySpin);
     m_simulationParameterForm->addRow(QStringLiteral("流水方向"), m_simulationDirectionCombo);
@@ -569,10 +579,10 @@ void MainWindow::buildUi()
     simulationButtons->setSpacing(8);
     m_simulationResetButton = new QPushButton(QStringLiteral("重置相位"));
     m_simulationResetButton->setObjectName(QStringLiteral("secondaryButton"));
-    m_simulationResetButton->setMinimumWidth(104);
+    m_simulationResetButton->setMinimumWidth(95);
     m_simulationRestoreButton = new QPushButton(QStringLiteral("恢复手动值"));
     m_simulationRestoreButton->setObjectName(QStringLiteral("secondaryButton"));
-    m_simulationRestoreButton->setMinimumWidth(112);
+    m_simulationRestoreButton->setMinimumWidth(105);
     simulationButtons->addWidget(m_simulationResetButton);
     simulationButtons->addWidget(m_simulationRestoreButton);
     simulationLayout->addLayout(simulationButtons);
@@ -607,6 +617,7 @@ void MainWindow::buildUi()
     m_tabs->setDocumentMode(true);
 
     auto *resultPage = new QWidget;
+    resultPage->setObjectName(QStringLiteral("resultPage"));
     auto *resultLayout = new QVBoxLayout(resultPage);
     resultLayout->setContentsMargins(10, 12, 10, 10);
     auto *resultTools = new QHBoxLayout;
@@ -614,13 +625,6 @@ void MainWindow::buildUi()
     m_resultTitleLabel->setObjectName(QStringLiteral("sectionTitle"));
     resultTools->addWidget(m_resultTitleLabel);
     resultTools->addStretch();
-    resultLayout->addLayout(resultTools);
-
-    auto *resultOptions = new QHBoxLayout;
-    resultOptions->setSpacing(6);
-    resultOptions->addWidget(m_simulationGroup, 1);
-    auto *resultModeLabel = new QLabel(QStringLiteral("显示方式"));
-    resultModeLabel->setObjectName(QStringLiteral("caption"));
     m_resultViewCombo = new QComboBox;
     m_resultViewCombo->addItem(QStringLiteral("表格模式"), 0);
     m_resultViewCombo->addItem(QStringLiteral("面板模式"), 1);
@@ -628,8 +632,12 @@ void MainWindow::buildUi()
     m_resultViewCombo->setMaximumWidth(124);
     m_resultViewCombo->view()->setMinimumWidth(128);
     m_resultViewCombo->setAccessibleName(QStringLiteral("数据解析显示方式"));
-    resultOptions->addWidget(resultModeLabel, 0, Qt::AlignVCenter);
-    resultOptions->addWidget(m_resultViewCombo, 0, Qt::AlignVCenter);
+    resultTools->addWidget(m_resultViewCombo, 0, Qt::AlignVCenter);
+    resultLayout->addLayout(resultTools);
+
+    auto *resultOptions = new QHBoxLayout;
+    resultOptions->setSpacing(6);
+    resultOptions->addWidget(m_simulationGroup, 1);
     resultLayout->addLayout(resultOptions);
 
     m_resultViewStack = new QStackedWidget;
@@ -1107,6 +1115,130 @@ void MainWindow::launchNewInstance()
     } else {
         setStatus(QStringLiteral("软件多开失败，无法启动新实例"), true);
     }
+}
+
+void MainWindow::checkForUpdates()
+{
+    if (!m_updateManager)
+        return;
+
+    QNetworkRequest request(
+        QUrl(QStringLiteral("https://api.github.com/repos/chenz12213412/"
+                           "Modbus-Communication-Assistant/releases/latest")));
+    request.setHeader(QNetworkRequest::UserAgentHeader,
+                      QStringLiteral("ModbusSerialAssistant/%1")
+                          .arg(QApplication::applicationVersion()));
+    QNetworkReply *reply = m_updateManager->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        const QByteArray payload = reply->readAll();
+        const bool requestOk = reply->error() == QNetworkReply::NoError;
+        reply->deleteLater();
+        if (!requestOk)
+            return;
+
+        const QJsonObject release = QJsonDocument::fromJson(payload).object();
+        QString tag = release.value(QStringLiteral("tag_name")).toString().trimmed();
+        if (tag.startsWith(QLatin1Char('v'), Qt::CaseInsensitive))
+            tag.remove(0, 1);
+        const QVersionNumber latest = QVersionNumber::fromString(tag);
+        const QVersionNumber current =
+            QVersionNumber::fromString(QApplication::applicationVersion());
+        if (latest.isNull() || current.isNull() || latest <= current)
+            return;
+
+        const QString releaseUrl = release.value(QStringLiteral("html_url")).toString();
+        QString downloadUrl;
+        const QJsonArray assets = release.value(QStringLiteral("assets")).toArray();
+        for (const QJsonValue &assetValue : assets) {
+            const QJsonObject asset = assetValue.toObject();
+            const QString name = asset.value(QStringLiteral("name")).toString();
+            const QString url = asset.value(QStringLiteral("browser_download_url")).toString();
+            if (name.endsWith(QStringLiteral("_OneFile.exe"), Qt::CaseInsensitive)) {
+                downloadUrl = url;
+                break;
+            }
+            if (downloadUrl.isEmpty() && name.endsWith(QStringLiteral(".exe"),
+                                                        Qt::CaseInsensitive))
+                downloadUrl = url;
+        }
+
+        if (downloadUrl.isEmpty()) {
+            if (QMessageBox::question(
+                    this, QStringLiteral("发现新版本"),
+                    QStringLiteral("发现 Modbus 通讯助手 %1，但发布页没有可下载的 EXE。是否打开发布页？")
+                        .arg(tag),
+                    QMessageBox::Yes | QMessageBox::No) == QMessageBox::Yes) {
+                QDesktopServices::openUrl(QUrl(releaseUrl));
+            }
+            return;
+        }
+
+        if (QMessageBox::question(
+                this, QStringLiteral("发现新版本"),
+                QStringLiteral("发现 Modbus 通讯助手 %1，是否下载并自动更新？").arg(tag),
+                QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes) {
+            return;
+        }
+
+        QNetworkRequest downloadRequest{QUrl(downloadUrl)};
+        downloadRequest.setHeader(
+            QNetworkRequest::UserAgentHeader,
+            QStringLiteral("ModbusSerialAssistant/%1")
+                .arg(QApplication::applicationVersion()));
+        QNetworkReply *downloadReply = m_updateManager->get(downloadRequest);
+        connect(downloadReply, &QNetworkReply::finished, this, [this, downloadReply] {
+            const QByteArray executable = downloadReply->readAll();
+            const bool downloadOk = downloadReply->error() == QNetworkReply::NoError
+                                    && executable.size() > 1024 * 1024;
+            downloadReply->deleteLater();
+            if (!downloadOk) {
+                setStatus(QStringLiteral("新版本下载失败，请稍后重试"), true);
+                return;
+            }
+
+            const QString updatePath = QDir(QDir::tempPath()).filePath(
+                QStringLiteral("ModbusSerialAssistant_update.exe"));
+            QFile updateFile(updatePath);
+            if (!updateFile.open(QIODevice::WriteOnly)
+                || updateFile.write(executable) != executable.size()) {
+                setStatus(QStringLiteral("无法保存新版本文件"), true);
+                return;
+            }
+            updateFile.close();
+
+            const QString scriptPath = QDir(QDir::tempPath()).filePath(
+                QStringLiteral("ModbusSerialAssistant_update.ps1"));
+            const QString script = QStringLiteral(
+                "param([string]$Source,[string]$Target,[int]$OwnerPid)\n"
+                "while (Get-Process -Id $OwnerPid -ErrorAction SilentlyContinue) { "
+                "Start-Sleep -Milliseconds 250 }\n"
+                "Copy-Item -LiteralPath $Source -Destination $Target -Force\n"
+                "Start-Process -FilePath $Target\n"
+                "Remove-Item -LiteralPath $Source -Force -ErrorAction SilentlyContinue\n"
+                "Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue\n");
+            QFile scriptFile(scriptPath);
+            if (!scriptFile.open(QIODevice::WriteOnly | QIODevice::Text)
+                || scriptFile.write(script.toUtf8()) != script.toUtf8().size()) {
+                setStatus(QStringLiteral("无法创建自动更新程序"), true);
+                return;
+            }
+            scriptFile.close();
+
+            const QStringList arguments{
+                QStringLiteral("-NoProfile"), QStringLiteral("-ExecutionPolicy"),
+                QStringLiteral("Bypass"), QStringLiteral("-File"), scriptPath,
+                QStringLiteral("-Source"), updatePath,
+                QStringLiteral("-Target"), QCoreApplication::applicationFilePath(),
+                QStringLiteral("-OwnerPid"), QString::number(QCoreApplication::applicationPid())
+            };
+            if (!QProcess::startDetached(QStringLiteral("powershell.exe"), arguments)) {
+                setStatus(QStringLiteral("无法启动自动更新程序"), true);
+                return;
+            }
+            setStatus(QStringLiteral("新版本已下载，正在重启完成更新"));
+            QCoreApplication::quit();
+        });
+    });
 }
 
 void MainWindow::refreshPorts()

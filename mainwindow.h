@@ -17,6 +17,7 @@ class QGridLayout;
 class QGroupBox;
 class QLabel;
 class QLineEdit;
+class QNetworkAccessManager;
 class QPlainTextEdit;
 class QPushButton;
 class QSerialPort;
@@ -73,6 +74,7 @@ private slots:
     void generateSimulationData();
     void resetSimulationPhase();
     void restoreSimulationData();
+    void checkForUpdates();
 
 private:
     void buildUi();
@@ -133,6 +135,7 @@ private:
     QTimer *m_frameGapTimer = nullptr;
     QTimer *m_pollTimer = nullptr;
     QTimer *m_simulationTimer = nullptr;
+    QNetworkAccessManager *m_updateManager = nullptr;
     QByteArray m_receiveBuffer;
     QByteArray m_tcpReceiveBuffer;
     QByteArray m_lastRequest;
